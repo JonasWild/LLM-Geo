@@ -249,8 +249,11 @@ output/<task_name>/<UTC timestamp>/
   <task_name>.checkpoints.sqlite
   <task_name>.state.json
   prompts/
-    planner_01.txt
-    planner_02.txt                # present when planning is retried
+    001_retrieve_01.txt
+    002_plan_01.txt
+    003_code_<operation>_01.txt
+    004_review_<operation>_01.txt
+    ...                           # only calls that actually occurred
   data/                           retrieved GeoJSON inputs
   workflow/
     plan.json
@@ -281,7 +284,10 @@ continues with a warning.
 - File: console events plus DEBUG detail.
 - `workflow/execution.png`: chronological top-level stage log, including retries,
   outcomes, and durations.
-- Never logged: secrets, raw prompts, generated code.
+- Prompt contents are not copied into `llm_geo.log`. The `prompts/` artifacts
+  intentionally preserve submitted prompts and can contain generated code,
+  tracebacks, result metadata, and local paths; handle the run directory accordingly.
+- Never persisted or logged: provider credentials and environment secrets.
 
 ## Tests
 

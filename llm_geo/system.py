@@ -30,6 +30,7 @@ from llm_geo.operations.registry import RegisteredOperation
 from llm_geo.subagents.runtime import (
     ask_structured,
     ask_structured_with_tool_results,
+    build_review_prompt,
     create_structured_agent,
     review_code,
 )
@@ -60,7 +61,7 @@ from llm_geo.utils.models import (
     WorkflowPlan,
     WorkflowStep,
 )
-from llm_geo.utils.prompts import GIS_RULES
+from llm_geo.utils.prompts import GIS_RULES, save_prompt
 
 
 def create_llm_geo_graph(
@@ -166,7 +167,7 @@ def create_llm_geo_graph(
         data_directory = Path(state["save_dir"]) / "data"
         data_directory.mkdir(parents=True, exist_ok=True)
         get_logger().info("Retrieving data | providers=%d", len(provider_tools))
-        prompt = f"""
+        prompt = textwrap.dedent(f"""
         TASK:
         {state['task']}
 
@@ -174,10 +175,18 @@ def create_llm_geo_graph(
 
         Call the applicable provider tools. Return only the local locations returned
         by those tool calls, in `selected_locations`.
-        """
+        """)
+        prompt_path = save_prompt(
+            state["save_dir"],
+            stage="retrieve",
+            agent="retriever",
+            subject="sources",
+            prompt=prompt,
+        )
+        get_logger().info("Retriever prompt saved | path=%s", prompt_path)
         try:
             decision, raw_results = ask_structured_with_tool_results(
-                retriever, textwrap.dedent(prompt)
+                retriever, prompt
             )
             if not isinstance(decision, RetrievalDecision):
                 raise TypeError("Retriever returned an unexpected response type")
@@ -241,10 +250,13 @@ def create_llm_geo_graph(
             "For a generated operation, use implementation 'generated' and omit "
             "registered_operation_id."
         )
-        prompt_directory = Path(state["save_dir"]) / "prompts"
-        prompt_directory.mkdir(parents=True, exist_ok=True)
-        prompt_path = prompt_directory / f"planner_{attempt:02d}.txt"
-        prompt_path.write_text(prompt, encoding="utf-8")
+        prompt_path = save_prompt(
+            state["save_dir"],
+            stage="plan",
+            agent="planner",
+            subject="workflow",
+            prompt=prompt,
+        )
         get_logger().info("Planner prompt saved | path=%s", prompt_path)
         result = ask_structured(planner, prompt)
         if not isinstance(result, WorkflowPlan):
@@ -361,11 +373,30 @@ def create_llm_geo_graph(
                 f"with `{contract['signature']}` and end by returning exactly "
                 f"{contract['outputs']}. Do not call the function."
             )
+            coder_prompt_path = save_prompt(
+                state["save_dir"],
+                stage="ops",
+                agent="coder",
+                subject=operation_id,
+                prompt=requirements,
+            )
+            get_logger().info("Coder prompt saved | path=%s", coder_prompt_path)
             artifact = ask_structured(coder, requirements)
             if not isinstance(artifact, CodeArtifact):
                 raise TypeError("Coder returned an unexpected response type")
+            reviewer_prompt = build_review_prompt(artifact.code, requirements)
+            reviewer_prompt_path = save_prompt(
+                state["save_dir"],
+                stage="ops",
+                agent="reviewer",
+                subject=operation_id,
+                prompt=reviewer_prompt,
+            )
+            get_logger().info(
+                "Reviewer prompt saved | path=%s", reviewer_prompt_path
+            )
             reviewed_code, review_issues = review_code(
-                reviewer, artifact.code, requirements
+                reviewer, artifact.code, requirements, prompt=reviewer_prompt
             )
             step = WorkflowStep(
                 node_id=operation_id,
@@ -405,10 +436,30 @@ def create_llm_geo_graph(
         registered operations: retain those import statements and function calls
         exactly, and do not rewrite their implementations.
         """
-        artifact = ask_structured(assembler, textwrap.dedent(requirements))
+        requirements = textwrap.dedent(requirements)
+        assembler_prompt_path = save_prompt(
+            state["save_dir"],
+            stage="assemble",
+            agent="assembler",
+            subject="program",
+            prompt=requirements,
+        )
+        get_logger().info("Assembler prompt saved | path=%s", assembler_prompt_path)
+        artifact = ask_structured(assembler, requirements)
         if not isinstance(artifact, CodeArtifact):
             raise TypeError("Assembler returned an unexpected response type")
-        reviewed_code, _ = review_code(reviewer, artifact.code, requirements)
+        reviewer_prompt = build_review_prompt(artifact.code, requirements)
+        reviewer_prompt_path = save_prompt(
+            state["save_dir"],
+            stage="assemble",
+            agent="reviewer",
+            subject="program",
+            prompt=reviewer_prompt,
+        )
+        get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
+        reviewed_code, _ = review_code(
+            reviewer, artifact.code, requirements, prompt=reviewer_prompt
+        )
         path = Path(state["save_dir"]) / "code" / "solution.py"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(reviewed_code, encoding="utf-8")
@@ -434,10 +485,30 @@ def create_llm_geo_graph(
         directory: write every generated artifact there with a relative path. Treat
         the supplied source paths as read-only and never derive output paths from them.
         """
-        artifact = ask_structured(direct_coder, textwrap.dedent(requirements))
+        requirements = textwrap.dedent(requirements)
+        direct_prompt_path = save_prompt(
+            state["save_dir"],
+            stage="direct",
+            agent="coder",
+            subject="program",
+            prompt=requirements,
+        )
+        get_logger().info("Direct coder prompt saved | path=%s", direct_prompt_path)
+        artifact = ask_structured(direct_coder, requirements)
         if not isinstance(artifact, CodeArtifact):
             raise TypeError("Direct coder returned an unexpected response type")
-        reviewed_code, _ = review_code(reviewer, artifact.code, requirements)
+        reviewer_prompt = build_review_prompt(artifact.code, requirements)
+        reviewer_prompt_path = save_prompt(
+            state["save_dir"],
+            stage="direct",
+            agent="reviewer",
+            subject="program",
+            prompt=reviewer_prompt,
+        )
+        get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
+        reviewed_code, _ = review_code(
+            reviewer, artifact.code, requirements, prompt=reviewer_prompt
+        )
         return {
             "assembled_code": reviewed_code,
             "operations": [],
@@ -504,7 +575,16 @@ def create_llm_geo_graph(
 
         Return the entire corrected program, not a patch.
         """
-        artifact = ask_structured(debugger, textwrap.dedent(prompt))
+        prompt = textwrap.dedent(prompt)
+        debugger_prompt_path = save_prompt(
+            state["save_dir"],
+            stage="debug",
+            agent="debugger",
+            subject="program",
+            prompt=prompt,
+        )
+        get_logger().info("Debugger prompt saved | path=%s", debugger_prompt_path)
+        artifact = ask_structured(debugger, prompt)
         if not isinstance(artifact, CodeArtifact):
             raise TypeError("Debugger returned an unexpected response type")
         get_logger().info("Program repair generated | retrying execution")
@@ -543,7 +623,16 @@ def create_llm_geo_graph(
         and evidence. If invalid and repairable, return the entire corrected program in
         corrected_code.
         """
-        decision = ask_structured(validator, textwrap.dedent(prompt))
+        prompt = textwrap.dedent(prompt)
+        validator_prompt_path = save_prompt(
+            state["save_dir"],
+            stage="validate",
+            agent="validator",
+            subject="result",
+            prompt=prompt,
+        )
+        get_logger().info("Validator prompt saved | path=%s", validator_prompt_path)
+        decision = ask_structured(validator, prompt)
         if not isinstance(decision, ResultValidation):
             raise TypeError("Validator returned an unexpected response type")
         issues = deterministic_issues + decision.issues

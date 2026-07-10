@@ -68,12 +68,10 @@ def review_code(
     reviewer: CompiledStateGraph,
     code: str,
     requirements: str,
+    *,
+    prompt: str | None = None,
 ) -> tuple[str, list[str]]:
-    decision = ask_structured(
-        reviewer,
-        f"Review this Python code against the requirements.\n\n"
-        f"REQUIREMENTS:\n{requirements}\n\nCODE:\n{code}",
-    )
+    decision = ask_structured(reviewer, prompt or build_review_prompt(code, requirements))
     if not isinstance(decision, ReviewDecision):
         raise TypeError("Reviewer returned an unexpected response type")
     if decision.passed:
@@ -85,3 +83,11 @@ def review_code(
         )
     get_logger().info("Code review corrected %d issue(s)", len(decision.issues))
     return decision.corrected_code, decision.issues
+
+
+def build_review_prompt(code: str, requirements: str) -> str:
+    """Build the exact user prompt submitted to the code reviewer."""
+    return (
+        "Review this Python code against the requirements.\n\n"
+        f"REQUIREMENTS:\n{requirements}\n\nCODE:\n{code}"
+    )
