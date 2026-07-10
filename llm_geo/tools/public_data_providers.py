@@ -1,0 +1,199 @@
+"""Public OpenStreetMap retrieval tools that materialize GeoJSON datasets."""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+import requests
+from langchain_core.tools import tool
+
+from llm_geo.tools.data_inspection import to_toon
+
+
+OVERPASS_ENDPOINTS = (
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.nchc.org.tw/api/interpreter",
+)
+OVERPASS_ENDPOINT = OVERPASS_ENDPOINTS[0]
+NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search"
+DEFAULT_TIMEOUT_SECONDS = 90
+NOMINATIM_MIN_INTERVAL_SECONDS = 1.0
+_last_nominatim_request = 0.0
+
+
+def _write_feature_collection(output_path: str, collection: dict[str, Any]) -> Path:
+    path = Path(output_path).resolve()
+    if path.suffix.lower() not in {".geojson", ".json"}:
+        raise ValueError("output_path must end in .geojson or .json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(collection, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _source_result(
+    *,
+    description: str,
+    location: Path,
+    provider: str,
+    request: dict[str, Any],
+) -> str:
+    return to_toon(
+        {
+            "description": description,
+            "location": str(location),
+            "provider": provider,
+            "request": request,
+        }
+    )
+
+
+def _overpass_feature(element: dict[str, Any]) -> dict[str, Any] | None:
+    element_type = element.get("type")
+    element_id = element.get("id")
+    properties = {"osm_type": element_type, "osm_id": element_id, **element.get("tags", {})}
+    if element_type == "node" and "lat" in element and "lon" in element:
+        geometry = {"type": "Point", "coordinates": [element["lon"], element["lat"]]}
+    elif element_type in {"way", "relation"} and element.get("geometry"):
+        coordinates = [
+            [point["lon"], point["lat"]]
+            for point in element["geometry"]
+            if "lat" in point and "lon" in point
+        ]
+        if len(coordinates) < 2:
+            return None
+        if coordinates[0] == coordinates[-1] and len(coordinates) >= 4:
+            geometry = {"type": "Polygon", "coordinates": [coordinates]}
+        else:
+            geometry = {"type": "LineString", "coordinates": coordinates}
+    else:
+        return None
+    return {"type": "Feature", "properties": properties, "geometry": geometry}
+
+
+def _overpass_feature_collection(payload: dict[str, Any]) -> dict[str, Any]:
+    elements = payload.get("elements")
+    if not isinstance(elements, list):
+        raise ValueError("Overpass response did not contain an elements list")
+    features = [feature for element in elements if isinstance(element, dict) if (feature := _overpass_feature(element))]
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _nominatim_user_agent() -> str:
+    return os.getenv(
+        "NOMINATIM_USER_AGENT",
+        "LLM-GEO/0.2 (contact: jonas.wild2@hotmail.de)",
+    ).strip()
+
+
+def _overpass_user_agent() -> str:
+    return os.getenv(
+        "OVERPASS_USER_AGENT", "LLM-GEO/0.2 (contact: jonas.wild2@hotmail.de)"
+    ).strip()
+
+
+def _request_overpass(query: str) -> tuple[requests.Response, str]:
+    """Use public mirrors only when an instance is temporarily unavailable."""
+    last_response: requests.Response | None = None
+    for endpoint in OVERPASS_ENDPOINTS:
+        response = requests.post(
+            endpoint,
+            data={"data": query},
+            timeout=DEFAULT_TIMEOUT_SECONDS,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": _overpass_user_agent(),
+            },
+        )
+        if response.status_code not in {429, 502, 503, 504}:
+            response.raise_for_status()
+            return response, endpoint
+        last_response = response
+    if last_response is None:
+        raise RuntimeError("No Overpass endpoints are configured")
+    last_response.raise_for_status()
+    raise RuntimeError("All Overpass endpoints failed")
+
+
+@tool
+def overpass_to_geojson(overpass_ql: str, output_path: str, description: str) -> str:
+    """Run an Overpass QL query and write its returned OSM features as GeoJSON."""
+    if not overpass_ql.strip():
+        raise ValueError("overpass_ql must not be empty")
+    if not description.strip():
+        raise ValueError("description must not be empty")
+    response, endpoint = _request_overpass(overpass_ql)
+    collection = _overpass_feature_collection(response.json())
+    path = _write_feature_collection(output_path, collection)
+    return _source_result(
+        description=description,
+        location=path,
+        provider="overpass",
+        request={
+            "endpoint": endpoint,
+            "query": overpass_ql,
+            "feature_count": len(collection["features"]),
+        },
+    )
+
+
+@tool
+def nominatim_to_geojson(
+    query: str,
+    output_path: str,
+    description: str,
+    limit: int = 10,
+    country_codes: str | None = None,
+) -> str:
+    """Search Nominatim and write its GeoJSON FeatureCollection to a local file."""
+    global _last_nominatim_request
+    if not query.strip():
+        raise ValueError("query must not be empty")
+    if not description.strip():
+        raise ValueError("description must not be empty")
+    if not 1 <= limit <= 50:
+        raise ValueError("limit must be between 1 and 50")
+    elapsed = time.monotonic() - _last_nominatim_request
+    if elapsed < NOMINATIM_MIN_INTERVAL_SECONDS:
+        time.sleep(NOMINATIM_MIN_INTERVAL_SECONDS - elapsed)
+    parameters: dict[str, str | int] = {
+        "q": query,
+        "format": "geojson",
+        "polygon_geojson": 1,
+        "limit": limit,
+    }
+    if country_codes:
+        parameters["countrycodes"] = country_codes
+    response = requests.get(
+        NOMINATIM_ENDPOINT,
+        params=parameters,
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+        headers={"Accept": "application/geo+json", "User-Agent": _nominatim_user_agent()},
+    )
+    _last_nominatim_request = time.monotonic()
+    response.raise_for_status()
+    collection = response.json()
+    if not isinstance(collection, dict) or collection.get("type") != "FeatureCollection":
+        raise ValueError("Nominatim did not return a GeoJSON FeatureCollection")
+    if not isinstance(collection.get("features"), list):
+        raise ValueError("Nominatim GeoJSON response did not contain a features list")
+    path = _write_feature_collection(output_path, collection)
+    return _source_result(
+        description=description,
+        location=path,
+        provider="nominatim",
+        request={
+            "endpoint": NOMINATIM_ENDPOINT,
+            "query": query,
+            "limit": limit,
+            "country_codes": country_codes,
+            "feature_count": len(collection["features"]),
+        },
+    )
+
+
+PUBLIC_RETRIEVAL_TOOLS = [overpass_to_geojson, nominatim_to_geojson]

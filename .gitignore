@@ -1,2 +1,8 @@
-config.ini
-__pycache__
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.idea/
+output/
+.vscode/
+.deepeval/
