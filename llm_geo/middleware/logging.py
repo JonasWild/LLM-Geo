@@ -3,10 +3,49 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 
 LOGGER_NAME = "llm_geo"
+HTTP_LOGGER_LEVELS = {
+    "httpx": logging.INFO,
+    "urllib3.connectionpool": logging.DEBUG,
+}
+
+
+class _ForwardToLlmGeo(logging.Handler):
+    """Forward dependency records through the currently active LLM-GEO handlers."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        get_logger().handle(record)
+
+
+def _http_logging_enabled() -> bool:
+    value = os.getenv("LLM_GEO_LOG_HTTP", "false").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        "LLM_GEO_LOG_HTTP must be true/false, yes/no, on/off, or 1/0"
+    )
+
+
+def _configure_http_logging(enabled: bool) -> None:
+    """Route HTTP client metadata into LLM-GEO without logging payload bodies."""
+    for name, level in HTTP_LOGGER_LEVELS.items():
+        dependency_logger = logging.getLogger(name)
+        for handler in dependency_logger.handlers[:]:
+            if isinstance(handler, _ForwardToLlmGeo):
+                dependency_logger.removeHandler(handler)
+        if enabled:
+            dependency_logger.setLevel(level)
+            dependency_logger.addHandler(_ForwardToLlmGeo())
+            dependency_logger.propagate = False
+        else:
+            dependency_logger.setLevel(logging.WARNING)
+            dependency_logger.propagate = True
 
 
 def configure_logging(
@@ -36,8 +75,9 @@ def configure_logging(
         )
         logger.addHandler(file_handler)
 
-    for dependency in ("httpx", "openai", "rasterio", "fiona", "matplotlib"):
+    for dependency in ("openai", "rasterio", "fiona", "matplotlib"):
         logging.getLogger(dependency).setLevel(logging.WARNING)
+    _configure_http_logging(_http_logging_enabled())
     return logger
 
 
