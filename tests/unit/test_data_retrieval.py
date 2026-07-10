@@ -10,12 +10,7 @@ from unittest.mock import Mock, patch
 
 from llm_geo.tools.data_retrieval import validate_provider_results
 from llm_geo.tools.data_inspection import from_toon, to_toon
-from llm_geo.tools.public_data_providers import (
-    NOMINATIM_ENDPOINT,
-    OVERPASS_ENDPOINT,
-    nominatim_to_geojson,
-    overpass_to_geojson,
-)
+from llm_geo.tools.public_data_providers import nominatim_to_geojson, overpass_to_geojson
 
 
 class ProviderResultValidationTests(unittest.TestCase):
@@ -108,26 +103,29 @@ class PublicProviderToolTests(unittest.TestCase):
             ]
         }
         post.return_value = response
+        configured_endpoint = "https://overpass.internal.example/api/interpreter"
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "overpass.geojson"
 
-            result = from_toon(
-                overpass_to_geojson.invoke(
-                    {
-                        "overpass_ql": "node(1);out geom;",
-                        "output_path": str(output_path),
-                        "description": "Sample OSM data",
-                    }
+            with patch.dict("os.environ", {"OVERPASS_URL": configured_endpoint}):
+                result = from_toon(
+                    overpass_to_geojson.invoke(
+                        {
+                            "overpass_ql": "node(1);out geom;",
+                            "output_path": str(output_path),
+                            "description": "Sample OSM data",
+                        }
+                    )
                 )
-            )
 
             collection = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(result["provider"], "overpass")
-            self.assertEqual(result["request"]["endpoint"], OVERPASS_ENDPOINT)
+            self.assertEqual(result["request"]["endpoint"], configured_endpoint)
             self.assertEqual(collection["type"], "FeatureCollection")
             self.assertEqual(collection["features"][0]["geometry"]["type"], "Point")
             self.assertEqual(collection["features"][1]["geometry"]["type"], "Polygon")
             post.assert_called_once()
+            self.assertEqual(post.call_args.args[0], configured_endpoint)
             self.assertIn("User-Agent", post.call_args.kwargs["headers"])
 
     @patch("llm_geo.tools.public_data_providers.requests.get")
@@ -144,11 +142,15 @@ class PublicProviderToolTests(unittest.TestCase):
             ],
         }
         get.return_value = response
+        configured_endpoint = "https://nominatim.internal.example/search"
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "nominatim.geojson"
             with patch.dict(
                 "os.environ",
-                {"NOMINATIM_USER_AGENT": "LLM-GEO tests (contact: tests@example.com)"},
+                {
+                    "NOMINATIM_USER_AGENT": "LLM-GEO tests (contact: tests@example.com)",
+                    "NOMINATIM_URL": configured_endpoint,
+                },
             ):
                 result = from_toon(
                     nominatim_to_geojson.invoke(
@@ -163,10 +165,11 @@ class PublicProviderToolTests(unittest.TestCase):
 
             collection = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(result["provider"], "nominatim")
-            self.assertEqual(result["request"]["endpoint"], NOMINATIM_ENDPOINT)
+            self.assertEqual(result["request"]["endpoint"], configured_endpoint)
             self.assertEqual(result["request"]["country_codes"], "de")
             self.assertEqual(collection["type"], "FeatureCollection")
             self.assertEqual(len(collection["features"]), 1)
+            self.assertEqual(get.call_args.args[0], configured_endpoint)
             self.assertEqual(get.call_args.kwargs["params"]["format"], "geojson")
 
 

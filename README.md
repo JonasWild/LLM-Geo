@@ -1,51 +1,76 @@
 # LLM-GEO
 
-Autonomous GIS. Deep Agents supervision. LangGraph execution. No CLI arguments.
+Autonomous GIS. Deep Agents supervision. LangGraph execution.
 
 ## Configure and run
 
-Edit the configuration block in `main.py`:
-
-```python
-TASK = ""
-TASK_NAME = "llm_geo_task"
-RETRIEVAL_TOOLS = PUBLIC_RETRIEVAL_TOOLS
-MODEL = ""                      # e.g. "openai:gpt-4o"
-DIRECT_MODE = False
-USE_DEEP_AGENT = False
-ALLOW_CODE_EXECUTION = True
-OUTPUT_ROOT = Path("output")
-MAX_PLAN_ATTEMPTS = 3
-MAX_EXECUTION_ATTEMPTS = 10
-LOG_LEVEL = logging.INFO
-```
-
-Then:
+Install the project and copy the environment template:
 
 ```powershell
 poetry install --no-root
-poetry run python main.py
+Copy-Item .env.example .env
 ```
 
-Empty `TASK` or `MODEL` → readiness check; no LLM request.
+Configure the model and credentials in `.env`:
 
-Set `USE_DEEP_AGENT = True` to route the task through the conversational Deep
+```dotenv
+LLM_GEO_MODEL=gpt-5.4-mini
+LLM_GEO_MODEL_PROVIDER=openai
+OPENAI_API_KEY=replace-me
+OPENAI_BASE_URL=
+```
+
+`OPENAI_BASE_URL` is optional for OpenAI itself. To use an OpenAI Chat
+Completions-compatible server such as LM Studio, vLLM, or an OpenAI-compatible
+Ollama endpoint, set its `/v1` URL and change only the model name and API key as
+required by that server. A custom URL explicitly uses the Chat Completions API:
+
+```dotenv
+LLM_GEO_MODEL=my-local-model
+LLM_GEO_MODEL_PROVIDER=openai
+OPENAI_API_KEY=not-needed
+OPENAI_BASE_URL=http://localhost:1234/v1
+```
+
+The remaining durable runtime settings are documented in `.env.example`:
+`LLM_GEO_DIRECT_MODE`, `LLM_GEO_USE_DEEP_AGENT`,
+`LLM_GEO_ALLOW_CODE_EXECUTION`, `LLM_GEO_OUTPUT_ROOT`, retry limits, and
+`LLM_GEO_LOG_LEVEL`. Values already set in the shell take precedence over `.env`.
+
+Run the default task from `main.py`, or override the per-run values on the command
+line:
+
+```powershell
+poetry run python main.py
+poetry run python main.py --task "Map parks in Berlin" --task-name berlin_parks
+```
+
+An empty task or `LLM_GEO_MODEL` performs a readiness check without an LLM request.
+Retrieval tool registration and trusted Python operation registration remain in
+`main.py`, because they are Python objects rather than scalar configuration.
+
+Set `LLM_GEO_USE_DEEP_AGENT=true` to route the task through the conversational Deep
 Agents supervisor. The supervisor exposes the complete workflow as one
 `run_geospatial_analysis` tool and forwards the same output, execution, retry,
-and logging settings as the direct entry path. `DIRECT_MODE` independently
+and logging settings as the direct entry path. `LLM_GEO_DIRECT_MODE` independently
 controls graph decomposition inside that workflow.
 
 `PUBLIC_RETRIEVAL_TOOLS` registers the built-in `overpass_to_geojson` and
 `nominatim_to_geojson` tools. Both write local GeoJSON FeatureCollections only.
-For Nominatim, set an identifying user agent with contact information before running:
+For Nominatim, set an identifying user agent with contact information in `.env`:
 
-```powershell
-$env:NOMINATIM_USER_AGENT = "LLM-GEO/0.2 (contact: you@example.com)"
+```dotenv
+NOMINATIM_USER_AGENT=LLM-GEO/0.2 (contact: you@example.com)
+OVERPASS_URL=
+NOMINATIM_URL=
 ```
 
 The Nominatim tool permits one request per second and limits each search to 50 results.
 Overpass queries are supplied as Overpass QL and use the public interpreter endpoint;
-keep them spatially bounded and narrowly scoped.
+keep them spatially bounded and narrowly scoped. Set `OVERPASS_URL` to a complete
+Overpass interpreter URL or `NOMINATIM_URL` to a complete Nominatim search URL to use
+a self-hosted instance or proxy. When `OVERPASS_URL` is set, requests stay on that
+endpoint instead of falling back to the public mirror pool.
 
 ## Registered Operations
 

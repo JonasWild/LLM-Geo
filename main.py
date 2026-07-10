@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import BaseTool
 
@@ -16,8 +18,46 @@ from llm_geo.subagents.supervisor import create_geo_agent, run_geo_agent
 from llm_geo.system import run_llm_geo
 from llm_geo.tools.public_data_providers import PUBLIC_RETRIEVAL_TOOLS
 
-import dotenv
-dotenv.load_dotenv(override=True)
+load_dotenv()
+
+
+def _environment_bool(name: str, default: bool) -> bool:
+    """Read a conventional boolean value from the environment."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true/false, yes/no, on/off, or 1/0")
+
+
+def _environment_positive_int(name: str, default: int) -> int:
+    """Read a positive integer from the environment."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _environment_log_level(name: str, default: int) -> int:
+    """Read a Python logging level name from the environment."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    level = logging.getLevelNamesMapping().get(raw_value.strip().upper())
+    if level is None:
+        raise ValueError(f"{name} must be a valid logging level such as INFO or DEBUG")
+    return level
+
 
 # ---------------------------------------------------------------------------
 # Task configuration
@@ -31,27 +71,44 @@ RETRIEVAL_TOOLS: list[BaseTool] = PUBLIC_RETRIEVAL_TOOLS
 # Import modules containing @code functions before this line, then expose them here.
 REGISTERED_OPERATIONS = registered_operations()
 
-# Model example: "openai:gpt-4o". Empty = offline readiness check.
-MODEL = "gpt-5.4-mini"
+# Durable runtime configuration belongs in .env. Keep task-specific inputs below or
+# pass them through the CLI. An empty model enables the offline readiness check.
+MODEL = os.getenv("LLM_GEO_MODEL", "gpt-5.4-mini").strip()
+MODEL_PROVIDER = os.getenv("LLM_GEO_MODEL_PROVIDER", "openai").strip() or None
+BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip() or None
 
 # Graph mode is more robust. Direct mode skips DAG and operation decomposition.
-DIRECT_MODE = False
+DIRECT_MODE = _environment_bool("LLM_GEO_DIRECT_MODE", False)
 
 # Optional conversational supervisor around the complete LLM-GEO workflow.
-USE_DEEP_AGENT = False
+USE_DEEP_AGENT = _environment_bool("LLM_GEO_USE_DEEP_AGENT", False)
 
 # Generated Python runs only when enabled.
-ALLOW_CODE_EXECUTION = True
+ALLOW_CODE_EXECUTION = _environment_bool("LLM_GEO_ALLOW_CODE_EXECUTION", True)
 
 # Every run: OUTPUT_ROOT / TASK_NAME / UTC_TIMESTAMP.
-OUTPUT_ROOT = Path("output")
+OUTPUT_ROOT = Path(os.getenv("LLM_GEO_OUTPUT_ROOT", "output"))
 
 # Bounded autonomous correction.
-MAX_PLAN_ATTEMPTS = 3
-MAX_EXECUTION_ATTEMPTS = 10
+MAX_PLAN_ATTEMPTS = _environment_positive_int("LLM_GEO_MAX_PLAN_ATTEMPTS", 3)
+MAX_EXECUTION_ATTEMPTS = _environment_positive_int(
+    "LLM_GEO_MAX_EXECUTION_ATTEMPTS", 10
+)
 
 # INFO: concise progress. DEBUG: additional file detail.
-LOG_LEVEL = logging.INFO
+LOG_LEVEL = _environment_log_level("LLM_GEO_LOG_LEVEL", logging.INFO)
+
+
+def _initialize_model():
+    """Create the configured LangChain model, including compatible endpoints."""
+    options: dict[str, str | bool] = {}
+    if MODEL_PROVIDER:
+        options["model_provider"] = MODEL_PROVIDER
+    if BASE_URL:
+        options["base_url"] = BASE_URL
+        # Compatible servers commonly expose Chat Completions but not Responses.
+        options["use_responses_api"] = False
+    return init_chat_model(MODEL, **options)
 
 
 def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
@@ -60,11 +117,16 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
     logger = get_logger()
     if not task or not MODEL:
         logger.info("LLM-GEO ready | provider_connection=disabled")
-        logger.info("Set TASK, MODEL, and RETRIEVAL_TOOLS in main.py to run")
+        logger.info("Set a task and LLM_GEO_MODEL to run")
         return
 
-    logger.info("Initializing model | identifier=%s", MODEL)
-    model = init_chat_model(MODEL)
+    logger.info(
+        "Initializing model | identifier=%s | provider=%s | endpoint=%s",
+        MODEL,
+        MODEL_PROVIDER or "inferred",
+        "custom" if BASE_URL else "provider-default",
+    )
+    model = _initialize_model()
     if USE_DEEP_AGENT:
         logger.info("Execution path | deep_agent=enabled")
         agent = create_geo_agent(

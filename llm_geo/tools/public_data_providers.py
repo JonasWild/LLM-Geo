@@ -96,10 +96,21 @@ def _overpass_user_agent() -> str:
     ).strip()
 
 
+def _overpass_endpoints() -> tuple[str, ...]:
+    """Return a configured endpoint or the default public mirror pool."""
+    configured_endpoint = os.getenv("OVERPASS_URL", "").strip()
+    return (configured_endpoint,) if configured_endpoint else OVERPASS_ENDPOINTS
+
+
+def _nominatim_endpoint() -> str:
+    """Return the configured Nominatim search endpoint."""
+    return os.getenv("NOMINATIM_URL", "").strip() or NOMINATIM_ENDPOINT
+
+
 def _request_overpass(query: str) -> tuple[requests.Response, str]:
     """Use public mirrors only when an instance is temporarily unavailable."""
     last_response: requests.Response | None = None
-    for endpoint in OVERPASS_ENDPOINTS:
+    for endpoint in _overpass_endpoints():
         response = requests.post(
             endpoint,
             data={"data": query},
@@ -168,8 +179,9 @@ def nominatim_to_geojson(
     }
     if country_codes:
         parameters["countrycodes"] = country_codes
+    endpoint = _nominatim_endpoint()
     response = requests.get(
-        NOMINATIM_ENDPOINT,
+        endpoint,
         params=parameters,
         timeout=DEFAULT_TIMEOUT_SECONDS,
         headers={"Accept": "application/geo+json", "User-Agent": _nominatim_user_agent()},
@@ -187,7 +199,7 @@ def nominatim_to_geojson(
         location=path,
         provider="nominatim",
         request={
-            "endpoint": NOMINATIM_ENDPOINT,
+            "endpoint": endpoint,
             "query": query,
             "limit": limit,
             "country_codes": country_codes,
