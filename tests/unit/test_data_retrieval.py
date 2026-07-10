@@ -107,7 +107,14 @@ class PublicProviderToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "overpass.geojson"
 
-            with patch.dict("os.environ", {"OVERPASS_URL": configured_endpoint}):
+            with (
+                patch.dict("os.environ", {"OVERPASS_URL": configured_endpoint}),
+                patch(
+                    "llm_geo.tools.public_data_providers.http_logging_enabled",
+                    return_value=True,
+                ),
+                patch("llm_geo.tools.public_data_providers.get_logger") as get_logger,
+            ):
                 result = from_toon(
                     overpass_to_geojson.invoke(
                         {
@@ -127,6 +134,7 @@ class PublicProviderToolTests(unittest.TestCase):
             post.assert_called_once()
             self.assertEqual(post.call_args.args[0], configured_endpoint)
             self.assertIn("User-Agent", post.call_args.kwargs["headers"])
+            self.assertEqual(get_logger.return_value.info.call_count, 2)
 
     @patch("llm_geo.tools.public_data_providers.requests.get")
     def test_nominatim_persists_returned_feature_collection(self, get: Mock) -> None:
@@ -151,7 +159,10 @@ class PublicProviderToolTests(unittest.TestCase):
                     "NOMINATIM_USER_AGENT": "LLM-GEO tests (contact: tests@example.com)",
                     "NOMINATIM_URL": configured_endpoint,
                 },
-            ):
+            ), patch(
+                "llm_geo.tools.public_data_providers.http_logging_enabled",
+                return_value=True,
+            ), patch("llm_geo.tools.public_data_providers.get_logger") as get_logger:
                 result = from_toon(
                     nominatim_to_geojson.invoke(
                         {
@@ -171,6 +182,7 @@ class PublicProviderToolTests(unittest.TestCase):
             self.assertEqual(len(collection["features"]), 1)
             self.assertEqual(get.call_args.args[0], configured_endpoint)
             self.assertEqual(get.call_args.kwargs["params"]["format"], "geojson")
+            self.assertEqual(get_logger.return_value.info.call_count, 2)
 
 
 if __name__ == "__main__":

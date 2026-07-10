@@ -127,8 +127,33 @@ does not run during agent startup and does not require `openapi-python-client`. 
 hard-coded synchronizer explicitly during development:
 
 ```powershell
-poetry run python -m llm_geo.operations.generate_mcpo_client_and_facade
+poetry run python -m llm_geo.operations.generate_openapi_operations
 ```
+
+Each entry in `OPENAPI_SERVERS` selects exactly one schema source. A URL can be used:
+
+```python
+{
+    "service": "geo_mcp",
+    "openapi_url": "http://schema-host:8000/openapi.json",
+    "base_url": "http://operation-host:8000",
+}
+```
+
+Or the schema can be read from a local file. Relative paths are resolved from the
+repository root:
+
+```python
+{
+    "service": "geo_mcp",
+    "openapi_path": "openapi/geo_mcp.json",
+    "base_url": "http://operation-host:8000",
+}
+```
+
+`base_url` is deliberately separate from the schema source and is embedded as the
+default endpoint for generated functions. `LLM_GEO_OPENAPI_GEO_MCP_URL` can still
+override it at runtime without regenerating the module.
 
 It normalizes and snapshots each schema, renders a module under
 `llm_geo/operations/generated/`, imports the candidate in an isolated interpreter,

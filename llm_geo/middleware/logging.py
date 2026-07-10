@@ -32,6 +32,11 @@ def _http_logging_enabled() -> bool:
     )
 
 
+def http_logging_enabled() -> bool:
+    """Return whether outgoing HTTP request metadata should be logged."""
+    return _http_logging_enabled()
+
+
 def _configure_http_logging(enabled: bool) -> None:
     """Route HTTP client metadata into LLM-GEO without logging payload bodies."""
     for name, level in HTTP_LOGGER_LEVELS.items():
@@ -80,7 +85,7 @@ def configure_logging(
     for dependency in ("openai", "rasterio", "fiona", "matplotlib"):
         logging.getLogger(dependency).setLevel(logging.WARNING)
     _configure_http_logging(
-        _http_logging_enabled() if log_http is None else log_http
+        http_logging_enabled() if log_http is None else log_http
     )
     return logger
 

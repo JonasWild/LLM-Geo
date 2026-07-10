@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -15,6 +16,7 @@ from llm_geo.operations.openapi.parser import parse_openapi
 from llm_geo.operations.openapi.runtime import invoke_json
 from llm_geo.operations.openapi.renderer import render_module
 
+synchronizer = import_module("llm_geo.operations.generate_openapi_operations")
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "openapi" / "demo.json"
 
@@ -60,6 +62,30 @@ class OpenAPIParserTests(unittest.TestCase):
 
 
 class OpenAPIGeneratorTests(unittest.TestCase):
+    def test_schema_can_be_loaded_from_an_absolute_file_path(self) -> None:
+        spec, source = synchronizer.load_openapi_spec(
+            {
+                "service": "demo",
+                "openapi_path": FIXTURE,
+                "base_url": "https://geo.example.test",
+            }
+        )
+
+        self.assertEqual(spec["info"]["title"], "Demo geospatial service")
+        self.assertEqual(source, str(FIXTURE.resolve()))
+
+    def test_schema_source_must_be_exactly_one_url_or_path(self) -> None:
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            synchronizer.load_openapi_spec({"service": "demo"})
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            synchronizer.load_openapi_spec(
+                {
+                    "service": "demo",
+                    "openapi_url": "https://example.test/openapi.json",
+                    "openapi_path": FIXTURE,
+                }
+            )
+
     def test_generation_validates_registers_and_skips_unchanged_spec(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "generated"

@@ -6,11 +6,12 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from langchain_core.tools import tool
 
+from llm_geo.middleware.logging import get_logger, http_logging_enabled
 from llm_geo.tools.data_inspection import to_toon
 
 
@@ -107,18 +108,65 @@ def _nominatim_endpoint() -> str:
     return os.getenv("NOMINATIM_URL", "").strip() or NOMINATIM_ENDPOINT
 
 
+def _send_request(
+    *,
+    provider: str,
+    method: str,
+    endpoint: str,
+    send: Callable[[], requests.Response],
+) -> requests.Response:
+    """Send a provider request and log only safe request/response metadata."""
+    log_http = http_logging_enabled()
+    logger = get_logger()
+    started_at = time.monotonic()
+    if log_http:
+        logger.info(
+            "HTTP request | provider=%s | method=%s | endpoint=%s",
+            provider,
+            method,
+            endpoint,
+        )
+    try:
+        response = send()
+    except requests.RequestException:
+        if log_http:
+            logger.exception(
+                "HTTP request failed | provider=%s | method=%s | endpoint=%s | duration_seconds=%.3f",
+                provider,
+                method,
+                endpoint,
+                time.monotonic() - started_at,
+            )
+        raise
+    if log_http:
+        logger.info(
+            "HTTP response | provider=%s | method=%s | endpoint=%s | status=%s | duration_seconds=%.3f",
+            provider,
+            method,
+            endpoint,
+            response.status_code,
+            time.monotonic() - started_at,
+        )
+    return response
+
+
 def _request_overpass(query: str) -> tuple[requests.Response, str]:
     """Use public mirrors only when an instance is temporarily unavailable."""
     last_response: requests.Response | None = None
     for endpoint in _overpass_endpoints():
-        response = requests.post(
-            endpoint,
-            data={"data": query},
-            timeout=DEFAULT_TIMEOUT_SECONDS,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": _overpass_user_agent(),
-            },
+        response = _send_request(
+            provider="overpass",
+            method="POST",
+            endpoint=endpoint,
+            send=lambda: requests.post(
+                endpoint,
+                data={"data": query},
+                timeout=DEFAULT_TIMEOUT_SECONDS,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": _overpass_user_agent(),
+                },
+            ),
         )
         if response.status_code not in {429, 502, 503, 504}:
             response.raise_for_status()
@@ -180,11 +228,19 @@ def nominatim_to_geojson(
     if country_codes:
         parameters["countrycodes"] = country_codes
     endpoint = _nominatim_endpoint()
-    response = requests.get(
-        endpoint,
-        params=parameters,
-        timeout=DEFAULT_TIMEOUT_SECONDS,
-        headers={"Accept": "application/geo+json", "User-Agent": _nominatim_user_agent()},
+    response = _send_request(
+        provider="nominatim",
+        method="GET",
+        endpoint=endpoint,
+        send=lambda: requests.get(
+            endpoint,
+            params=parameters,
+            timeout=DEFAULT_TIMEOUT_SECONDS,
+            headers={
+                "Accept": "application/geo+json",
+                "User-Agent": _nominatim_user_agent(),
+            },
+        ),
     )
     _last_nominatim_request = time.monotonic()
     response.raise_for_status()

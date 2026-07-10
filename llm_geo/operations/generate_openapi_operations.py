@@ -13,13 +13,14 @@ import os
 import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from llm_geo.operations.openapi.generator import (
     DEFAULT_OUTPUT_DIRECTORY,
     generate_openapi_operations,
 )
 from llm_geo.operations.openapi.servers import OPENAPI_SERVERS
+
+PROJECT_ROOT = Path(__file__).parents[2]
 
 
 def fetch_openapi_spec(
@@ -39,14 +40,37 @@ def fetch_openapi_spec(
     return value
 
 
-def _default_base_url(openapi_url: str, spec: dict[str, Any]) -> str:
-    servers = spec.get("servers", [])
-    if isinstance(servers, list) and servers and isinstance(servers[0], dict):
-        configured = servers[0].get("url")
-        if isinstance(configured, str) and configured.startswith(("http://", "https://")):
-            return configured.rstrip("/")
-    parsed = urlsplit(openapi_url)
-    return f"{parsed.scheme}://{parsed.netloc}"
+def load_openapi_spec(server: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Load one configured schema from exactly one URL or local JSON file."""
+    openapi_url = server.get("openapi_url")
+    openapi_path = server.get("openapi_path")
+    if bool(openapi_url) == bool(openapi_path):
+        raise ValueError(
+            f"{server.get('service', 'OpenAPI service')} must configure exactly one "
+            "of openapi_url or openapi_path"
+        )
+    if openapi_url:
+        source = str(openapi_url)
+        return (
+            fetch_openapi_spec(
+                source,
+                api_key_environment=server.get("api_key_environment"),
+                auth_header=str(server.get("auth_header", "Authorization")),
+                auth_scheme=str(server.get("auth_scheme", "Bearer")),
+            ),
+            source,
+        )
+    path = Path(str(openapi_path)).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    path = path.resolve()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise FileNotFoundError(f"OpenAPI document does not exist: {path}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"OpenAPI document at {path} is not a JSON object")
+    return value, str(path)
 
 
 def ensure_openapi_operations_synced(
@@ -55,22 +79,21 @@ def ensure_openapi_operations_synced(
     """Fetch every configured server and generate validated operation modules."""
     for server in OPENAPI_SERVERS:
         service = str(server["service"])
-        openapi_url = str(server["openapi_url"])
         api_key_environment = server.get("api_key_environment")
         auth_header = str(server.get("auth_header", "Authorization"))
         auth_scheme = str(server.get("auth_scheme", "Bearer"))
-        spec = fetch_openapi_spec(
-            openapi_url,
-            api_key_environment=api_key_environment,
-            auth_header=auth_header,
-            auth_scheme=auth_scheme,
-        )
+        base_url = str(server.get("base_url", "")).rstrip("/")
+        if not base_url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"{service} must configure base_url as an absolute HTTP(S) URL"
+            )
+        spec, source = load_openapi_spec(server)
         result = generate_openapi_operations(
             spec,
             service=service,
-            default_base_url=_default_base_url(openapi_url, spec),
+            default_base_url=base_url,
             output_directory=output_directory,
-            source=openapi_url,
+            source=source,
             api_key_environment=api_key_environment,
             auth_header=auth_header,
             auth_scheme=auth_scheme,
