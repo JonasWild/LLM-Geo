@@ -48,7 +48,7 @@ def render_operation(
     )
     if signature:
         signature = f"\n{signature},\n"
-    doc_lines = [f'    """{definition.summary}', "", "    Args:"]
+    doc_lines = [f'    """{definition.description}', "", "    Args:"]
     if definition.parameters:
         doc_lines.extend(
             f"        {parameter.python_name}: {parameter.description}"

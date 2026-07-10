@@ -32,7 +32,7 @@ class OpenAPIDefinition:
     operation_id: str
     method: str
     path: str
-    summary: str
+    description: str
     parameters: tuple[ParameterDefinition, ...]
     return_annotation: str
     return_description: str

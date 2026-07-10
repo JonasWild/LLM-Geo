@@ -56,6 +56,10 @@ class OpenAPIParserTests(unittest.TestCase):
         )
 
         self.assertEqual(source.count("@code"), 2)
+        self.assertIn(
+            "Retrieve the complete mapped area and its available attributes.", source
+        )
+        self.assertNotIn("Retrieve one mapped area", source)
         self.assertIn("area_id: Identifier of the mapped area.", source)
         self.assertNotIn("area_id (int):", source)
         compile(source, "generated_demo.py", "exec")
@@ -85,6 +89,24 @@ class OpenAPIGeneratorTests(unittest.TestCase):
                     "openapi_path": FIXTURE,
                 }
             )
+
+    def test_synchronizer_passes_static_base_url_to_generated_operations(self) -> None:
+        generated = Mock(changed=False, operation_ids=("get_area",))
+        server = {
+            "service": "demo",
+            "openapi_path": FIXTURE,
+            "base_url": "https://runtime.example.test/root/",
+        }
+        with patch.object(synchronizer, "OPENAPI_SERVERS", [server]), patch.object(
+            synchronizer, "generate_openapi_operations", return_value=generated
+        ) as generate:
+            synchronizer.ensure_openapi_operations_synced()
+
+        self.assertEqual(
+            generate.call_args.kwargs["default_base_url"],
+            "https://runtime.example.test/root",
+        )
+        self.assertEqual(generate.call_args.kwargs["source"], str(FIXTURE.resolve()))
 
     def test_generation_validates_registers_and_skips_unchanged_spec(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

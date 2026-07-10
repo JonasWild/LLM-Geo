@@ -293,8 +293,8 @@ def parse_openapi(spec: dict[str, Any]) -> ParseResult:
                     key=lambda item: item.has_default or not item.required
                 )
                 return_annotation, return_description = _response_contract(operation, spec)
-                summary = _description(
-                    operation.get("summary") or operation.get("description"),
+                description = _description(
+                    operation.get("description") or operation.get("summary"),
                     f"Call the {operation_id} endpoint.",
                 )
                 definitions.append(
@@ -303,7 +303,7 @@ def parse_openapi(spec: dict[str, Any]) -> ParseResult:
                         operation_id=operation_id,
                         method=method.upper(),
                         path=str(path),
-                        summary=summary,
+                        description=description,
                         parameters=tuple(parameters),
                         return_annotation=return_annotation,
                         return_description=return_description,
