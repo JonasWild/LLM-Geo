@@ -37,8 +37,7 @@ The remaining durable runtime settings are documented in `.env.example`:
 `LLM_GEO_ALLOW_CODE_EXECUTION`, `LLM_GEO_OUTPUT_ROOT`, retry limits, and
 `LLM_GEO_LOG_LEVEL`. Values already set in the shell take precedence over `.env`.
 
-To record outgoing model, Overpass, and Nominatim HTTP requests, enable the built-in
-HTTP client logs:
+Outgoing model, Overpass, and Nominatim HTTP request logging is enabled by default:
 
 ```dotenv
 LLM_GEO_LOG_HTTP=true
@@ -49,6 +48,7 @@ This records request metadata such as method, URL, and response status in the ru
 summaries appear on the console at `INFO`. Set `LLM_GEO_LOG_LEVEL=DEBUG` when you also
 want the lower-level `requests`/urllib3 activity on the console. Debug URLs can contain
 query parameters, so use that setting only where geographic queries may safely appear.
+Set `LLM_GEO_LOG_HTTP=false` to disable all HTTP client request logging.
 
 Run the default task from `main.py`, or override the per-run values on the command
 line:

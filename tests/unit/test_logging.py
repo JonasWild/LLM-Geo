@@ -39,9 +39,17 @@ class HttpLoggingTests(unittest.TestCase):
             finally:
                 close_file_logging()
 
-    def test_http_logging_is_quiet_by_default(self) -> None:
+    def test_http_logging_is_enabled_by_default(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             configure_logging(logging.DEBUG)
+
+        self.assertEqual(logging.getLogger("httpx").level, logging.INFO)
+        self.assertEqual(
+            logging.getLogger("urllib3.connectionpool").level, logging.DEBUG
+        )
+
+    def test_http_logging_can_be_disabled_explicitly(self) -> None:
+        configure_logging(logging.DEBUG, log_http=False)
 
         self.assertEqual(logging.getLogger("httpx").level, logging.WARNING)
         self.assertEqual(

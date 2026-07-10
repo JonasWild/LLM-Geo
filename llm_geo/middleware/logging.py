@@ -22,7 +22,7 @@ class _ForwardToLlmGeo(logging.Handler):
 
 
 def _http_logging_enabled() -> bool:
-    value = os.getenv("LLM_GEO_LOG_HTTP", "false").strip().lower()
+    value = os.getenv("LLM_GEO_LOG_HTTP", "true").strip().lower()
     if value in {"1", "true", "yes", "on"}:
         return True
     if value in {"0", "false", "no", "off"}:
@@ -51,6 +51,8 @@ def _configure_http_logging(enabled: bool) -> None:
 def configure_logging(
     level: int = logging.INFO,
     log_file: str | Path | None = None,
+    *,
+    log_http: bool | None = None,
 ) -> logging.Logger:
     """Configure meaningful LLM-GEO logs without noisy dependency output."""
     logger = logging.getLogger(LOGGER_NAME)
@@ -77,7 +79,9 @@ def configure_logging(
 
     for dependency in ("openai", "rasterio", "fiona", "matplotlib"):
         logging.getLogger(dependency).setLevel(logging.WARNING)
-    _configure_http_logging(_http_logging_enabled())
+    _configure_http_logging(
+        _http_logging_enabled() if log_http is None else log_http
+    )
     return logger
 
 

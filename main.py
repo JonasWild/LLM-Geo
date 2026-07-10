@@ -97,6 +97,7 @@ MAX_EXECUTION_ATTEMPTS = _environment_positive_int(
 
 # INFO: concise progress. DEBUG: additional file detail.
 LOG_LEVEL = _environment_log_level("LLM_GEO_LOG_LEVEL", logging.INFO)
+LOG_HTTP = _environment_bool("LLM_GEO_LOG_HTTP", True)
 
 
 def _initialize_model():
@@ -113,7 +114,7 @@ def _initialize_model():
 
 def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
     """Execute the configured task or its command-line override."""
-    configure_logging(LOG_LEVEL)
+    configure_logging(LOG_LEVEL, log_http=LOG_HTTP)
     logger = get_logger()
     if not task or not MODEL:
         logger.info("LLM-GEO ready | provider_connection=disabled")
