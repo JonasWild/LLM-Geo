@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool
 from llm_geo.middleware.logging import configure_logging, get_logger
 from llm_geo.operations import registered_operations
 import llm_geo.operations.basic
+import llm_geo.operations.generated
 from llm_geo.subagents.supervisor import create_geo_agent, run_geo_agent
 from llm_geo.system import run_llm_geo
 from llm_geo.tools.public_data_providers import PUBLIC_RETRIEVAL_TOOLS

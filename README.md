@@ -119,6 +119,37 @@ arguments, return one concrete value, and include `Args:` and `Returns:` docstri
 sections. The first implementation supports one graph output per registered function;
 use generated operations for multi-output steps.
 
+### Generated OpenAPI operations
+
+Reviewed services in `llm_geo/operations/openapi/servers.py` can be converted directly
+from their OpenAPI JSON documents into the same strict `@code` functions. Generation
+does not run during agent startup and does not require `openapi-python-client`. Run the
+hard-coded synchronizer explicitly during development:
+
+```powershell
+poetry run python -m llm_geo.operations.generate_mcpo_client_and_facade
+```
+
+It normalizes and snapshots each schema, renders a module under
+`llm_geo/operations/generated/`, imports the candidate in an isolated interpreter,
+checks that every expected function registers, and only then replaces the previous
+module. Unsupported endpoints such as binary downloads are recorded with reasons in
+the generated manifest. Unchanged schema hashes are skipped.
+
+Generated operations are imported through the same reviewed server allowlist before
+`registered_operations()` is evaluated. Runtime configuration remains outside the
+generated source:
+
+```dotenv
+LLM_GEO_OPENAPI_GEO_MCP_URL=http://localhost:8000
+LLM_GEO_OPENAPI_GEO_MCP_API_KEY=
+LLM_GEO_OPENAPI_TIMEOUT=30
+```
+
+The generator currently supports path, query, header, and JSON request inputs plus
+JSON `2xx` responses. Multipart bodies, binary responses, callbacks, and external
+schema references are skipped rather than guessed.
+
 ## System
 
 `llm_geo/system.py` is the execution center:
@@ -163,6 +194,8 @@ llm_geo/
     code_execution.py           subprocess execution; artifacts
   operations/
     registry.py                 @code registration for trusted functions
+    openapi/                    direct OpenAPI parser, renderer, runtime, generator
+    generated/                  allowlisted generated @code modules and spec snapshots
   middleware/
     logging.py                  concise console + detailed file logs
   utils/
