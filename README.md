@@ -301,11 +301,28 @@ output/<task_name>/<UTC timestamp>/
     execution.mmd                  # route actually taken, with retries/timings
     execution.png
   code/
-    solution.py
+    solution.py                    # latest candidate; validated solution on success
+    revisions.jsonl                # chronological code-revision metadata
+    revisions/
+      001_assembler_raw.py
+      002_assembler_reviewed.py
+      003_debugger.py              # repairs are never overwritten
+      ...
+    executions/
+      attempt_001.py               # exact source submitted to the subprocess
+      attempt_001.json             # outcome, stdout/stderr, timing, revision
+      ...
   results/
     llm_geo_result.json
     ...maps, charts, reports
 ```
+
+`code/revisions/` traces every complete program produced by assembly, review,
+debugging, or validation. `code/executions/` separately records exactly which source
+was run and whether it succeeded, failed, timed out, or was skipped because execution
+was disabled. Revision numbering continues when a checkpointed run is resumed.
+`code/solution.py` remains the stable entry point: it contains the validated program
+after success and the latest attempted candidate after terminal failure.
 
 Resume: `resume_llm_geo(model, run_dir="output/<task>/<timestamp>")`.
 

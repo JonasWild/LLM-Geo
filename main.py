@@ -165,7 +165,11 @@ def initialize_operation_retriever() -> OperationRetriever | None:
     api_key = os.getenv("LLM_GEO_EMBEDDING_API_KEY", "").strip() or os.getenv(
         "OPENAI_API_KEY", ""
     ).strip()
-    arguments = {"model": model, "api_key": api_key or None}
+    arguments = {
+        "model": model,
+        "api_key": api_key or None,
+        "check_embedding_ctx_length": False,
+    }
     if base_url:
         arguments["base_url"] = base_url
     embeddings = OpenAIEmbeddings(**arguments)

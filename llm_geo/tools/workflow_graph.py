@@ -207,6 +207,45 @@ def operation_contract(plan: WorkflowPlan, operation_id: str) -> dict[str, Any]:
     }
 
 
+def operation_context(plan: WorkflowPlan, operation_id: str) -> dict[str, Any]:
+    """Return compact local interfaces needed to implement one operation."""
+    graph = plan_to_graph(plan)
+    node_map = {node.id: node for node in plan.nodes}
+    input_ids = list(graph.predecessors(operation_id))
+    output_ids = list(graph.successors(operation_id))
+    predecessor_ids = sorted(
+        {
+            predecessor
+            for data_id in input_ids
+            for predecessor in graph.predecessors(data_id)
+            if node_map[predecessor].kind == "operation"
+        }
+    )
+    successor_ids = sorted(
+        {
+            successor
+            for data_id in output_ids
+            for successor in graph.successors(data_id)
+            if node_map[successor].kind == "operation"
+        }
+    )
+    return {
+        "contract": operation_contract(plan, operation_id),
+        "input_data": [
+            node_map[node_id].model_dump(mode="json") for node_id in input_ids
+        ],
+        "output_data": [
+            node_map[node_id].model_dump(mode="json") for node_id in output_ids
+        ],
+        "predecessor_contracts": [
+            operation_contract(plan, node_id) for node_id in predecessor_ids
+        ],
+        "successor_contracts": [
+            operation_contract(plan, node_id) for node_id in successor_ids
+        ],
+    }
+
+
 def registered_operation_bridge(
     plan: WorkflowPlan,
     operation_id: str,

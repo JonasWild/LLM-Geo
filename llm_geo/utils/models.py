@@ -67,6 +67,29 @@ class CodeArtifact(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class AssemblyArtifact(BaseModel):
+    imports: str = ""
+    orchestration_code: str = Field(min_length=1)
+    notes: list[str] = Field(default_factory=list)
+
+
+class CodeReplacement(BaseModel):
+    old: str = Field(min_length=1)
+    new: str
+
+
+class CodeRepair(BaseModel):
+    replacements: list[CodeReplacement] = Field(default_factory=list)
+    complete_code: str | None = None
+    explanation: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_repair(self) -> "CodeRepair":
+        if not self.replacements and not self.complete_code:
+            raise ValueError("A repair must contain replacements or complete_code.")
+        return self
+
+
 class ReviewDecision(BaseModel):
     passed: bool
     issues: list[str] = Field(default_factory=list)
@@ -76,6 +99,7 @@ class ReviewDecision(BaseModel):
 class ResultValidation(BaseModel):
     valid: bool
     issues: list[str] = Field(default_factory=list)
+    replacements: list[CodeReplacement] = Field(default_factory=list)
     corrected_code: str | None = None
 
 
@@ -103,7 +127,11 @@ class LLMGeoState(TypedDict, total=False):
     retrieved_operation_ids: list[str]
     operations: list[dict[str, Any]]
     assembled_code: str
+    code_revision: int
+    current_revision: int
+    code_revisions: list[dict[str, Any]]
     execution: dict[str, Any]
+    execution_history: list[dict[str, Any]]
     validation: dict[str, Any]
     error: str
     status: str

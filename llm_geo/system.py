@@ -34,7 +34,14 @@ from llm_geo.subagents.runtime import (
     create_structured_agent,
     review_code,
 )
-from llm_geo.tools.code_execution import execute_code, snapshot_files
+from llm_geo.tools.code_execution import (
+    execute_code,
+    publish_solution,
+    save_code_revision,
+    save_execution_attempt,
+    save_execution_result,
+    snapshot_files,
+)
 from llm_geo.tools.data_inspection import to_json, to_toon
 from llm_geo.tools.mermaid_diagnostics import (
     execution_event,
@@ -43,13 +50,17 @@ from llm_geo.tools.mermaid_diagnostics import (
 )
 from llm_geo.tools.workflow_graph import (
     operation_contract,
+    operation_context,
     plan_to_graph,
     registered_operation_bridge,
     validate_workflow_plan,
     write_graph_artifacts,
 )
 from llm_geo.utils.models import (
+    AssemblyArtifact,
     CodeArtifact,
+    CodeRepair,
+    CodeReplacement,
     LLMGeoState,
     ResultValidation,
     ReviewDecision,
@@ -57,6 +68,49 @@ from llm_geo.utils.models import (
     WorkflowStep,
 )
 from llm_geo.utils.prompts import GIS_RULES, save_prompt
+
+
+def apply_code_replacements(
+    code: str, replacements: Sequence[CodeReplacement]
+) -> str:
+    """Apply unambiguous exact-text edits and validate the resulting Python."""
+    patched = code
+    for replacement in replacements:
+        occurrences = patched.count(replacement.old)
+        if occurrences != 1:
+            raise ValueError(
+                "Replacement source must occur exactly once; "
+                f"found {occurrences}: {replacement.old[:80]!r}"
+            )
+        patched = patched.replace(replacement.old, replacement.new, 1)
+    compile(patched, "<patched-solution>", "exec")
+    return patched
+
+
+def resolve_code_repair(code: str, repair: CodeRepair) -> str:
+    """Resolve a structured repair to a complete syntax-checked program."""
+    if repair.complete_code:
+        compile(repair.complete_code, "<repaired-solution>", "exec")
+        return repair.complete_code
+    return apply_code_replacements(code, repair.replacements)
+
+
+def compose_program(
+    imports: str,
+    functions: Sequence[str],
+    orchestration_code: str,
+    *,
+    validate: bool = True,
+) -> str:
+    """Compose reviewed functions with generated glue without rewriting them."""
+    parts = [imports.strip()] if imports.strip() else []
+    parts.extend(function for function in functions if function.strip())
+    if orchestration_code.strip():
+        parts.append(orchestration_code.strip())
+    program = "\n\n".join(parts)
+    if validate:
+        compile(program, "<assembled-solution>", "exec")
+    return program
 
 
 @contextmanager
@@ -127,15 +181,16 @@ def create_llm_geo_graph(
     )
     assembler = create_structured_agent(
         model,
-        "You assemble reviewed GIS functions into one complete executable Python "
-        "program. " + GIS_RULES,
-        CodeArtifact,
+        "You write only imports and orchestration glue for already-reviewed GIS "
+        "functions. Never reproduce their implementations. " + GIS_RULES,
+        AssemblyArtifact,
     )
     debugger = create_structured_agent(
         model,
-        "Repair the complete Python program from its traceback or validation "
-        "failures. Preserve intended interfaces. " + GIS_RULES,
-        CodeArtifact,
+        "Repair a Python program from its traceback or validation failures using "
+        "minimal exact-text replacements when possible. Preserve interfaces. "
+        + GIS_RULES,
+        CodeRepair,
     )
     validator = create_structured_agent(
         model,
@@ -235,6 +290,15 @@ def create_llm_geo_graph(
         else:
             planner_operations = trusted_operations
             selected_ids = [operation.id for operation in planner_operations]
+        previous_plan = state.get("plan")
+        previous_plan_section = (
+            "PREVIOUS PLAN:\n"
+            f"{to_toon(previous_plan)}\n\n"
+            "Preserve unaffected node IDs, contracts, registered-operation "
+            "selections, and edges. Correct only the reported issues.\n\n"
+            if previous_plan and state.get("plan_issues")
+            else ""
+        )
         prompt = (
             "REGISTERED-FIRST POLICY:\n"
             "- You MUST use a registered operation whenever its contract can perform "
@@ -248,7 +312,8 @@ def create_llm_geo_graph(
             "- Copy registered_operation_id exactly from the catalog.\n\n"
             "REGISTERED OPERATIONS:\n"
             f"{to_toon([operation.catalog_entry() for operation in planner_operations])}\n\n"
-            f"TASK:\n{state['task']}\n\nPREVIOUS PLAN ISSUES TO CORRECT:\n"
+            f"TASK:\n{state['task']}\n\n"
+            f"{previous_plan_section}PREVIOUS PLAN ISSUES TO CORRECT:\n"
             f"{to_toon(state.get('plan_issues', []))}\n\n"
             "Return one DAG containing retrieval, transformation, and output. Each "
             "edge must alternate data and operation. Retrieval must use matching "
@@ -324,7 +389,6 @@ def create_llm_geo_graph(
             for node_id in nx.topological_sort(graph)
             if node_map[node_id].kind == "operation"
         ]
-        completed: dict[str, dict[str, Any]] = {}
         operations: list[dict[str, Any]] = []
         for index, operation_id in enumerate(operation_ids, start=1):
             get_logger().info(
@@ -348,7 +412,6 @@ def create_llm_geo_graph(
                     code=bridge_code,
                     registered_operation_id=registered.id,
                 ).model_dump(mode="json")
-                completed[operation_id] = step
                 operations.append(step)
                 get_logger().info(
                     "Using registered operation | node=%s | operation=%s",
@@ -356,26 +419,10 @@ def create_llm_geo_graph(
                     registered.id,
                 )
                 continue
-            ancestor_ids = {
-                node_id
-                for node_id in nx.ancestors(graph, operation_id)
-                if node_map[node_id].kind == "operation"
-            }
-            ancestor_code = "\n\n".join(
-                completed[node_id]["code"]
-                for node_id in operation_ids
-                if node_id in ancestor_ids
-            )
-            descendant_contracts = [
-                operation_contract(plan, node_id)
-                for node_id in operation_ids
-                if node_id in nx.descendants(graph, operation_id)
-            ]
+            context = operation_context(plan, operation_id)
             requirements = (
-                f"TASK:\n{state['task']}\n\nPLAN:\n{to_toon(state['plan'])}"
-                f"\n\nCONTRACT:\n{to_toon(contract)}\n\nANCESTOR CODE:\n"
-                f"{ancestor_code or '(none)'}\n\nDESCENDANT CONTRACTS:\n"
-                f"{to_toon(descendant_contracts)}\n\nThe returned code must start "
+                f"TASK:\n{state['task']}\n\nLOCAL WORKFLOW CONTEXT:\n"
+                f"{to_toon(context)}\n\nThe returned code must start "
                 f"with `{contract['signature']}` and end by returning exactly "
                 f"{contract['outputs']}. Do not call the function."
             )
@@ -421,14 +468,21 @@ def create_llm_geo_graph(
                 code=reviewed_code,
                 review_issues=review_issues,
             ).model_dump(mode="json")
-            completed[operation_id] = step
             operations.append(step)
         get_logger().info("Operation generation complete | count=%d", len(operations))
         return {"operations": operations, "status": "operations_generated"}
 
     def assemble_program(state: LLMGeoState) -> dict[str, Any]:
         get_logger().info("Assembling complete program")
-        function_code = "\n\n".join(item["code"] for item in state["operations"])
+        function_code = [item["code"] for item in state["operations"]]
+        interfaces = [
+            {
+                key: value
+                for key, value in item.items()
+                if key in {"node_id", "description", "inputs", "outputs"}
+            }
+            for item in state["operations"]
+        ]
         requirements = f"""
         TASK:
         {state["task"]}
@@ -436,17 +490,15 @@ def create_llm_geo_graph(
         WORKFLOW PLAN:
         {to_toon(state["plan"])}
 
-        REVIEWED FUNCTIONS:
-        {function_code}
+        REVIEWED FUNCTION INTERFACES:
+        {to_toon(interfaces)}
 
-        Return a complete program containing all required imports, the reviewed
-        functions unchanged, and an assemble_solution() function that calls them in
-        dependency order. Call assemble_solution() at the end. Print important results.
-        Save requested maps/charts and write llm_geo_result.json in the current
-        working directory, which is the run's results directory. Do not use an
-        if __name__ guard. Functions that import from `llm_geo.operations` are trusted
-        registered operations: retain those import statements and function calls
-        exactly, and do not rewrite their implementations.
+        Return only additional imports and orchestration_code. The orchestration code
+        must define assemble_solution(), call the reviewed functions in dependency
+        order, and call assemble_solution() at the end. Do not reproduce any reviewed
+        function. Print important results. Save requested maps/charts and write
+        llm_geo_result.json in the current working directory, which is the run's
+        results directory. Do not use an if __name__ guard.
         """
         requirements = textwrap.dedent(requirements)
         assembler_prompt_path = save_prompt(
@@ -459,9 +511,30 @@ def create_llm_geo_graph(
         get_logger().info("Assembler prompt saved | path=%s", assembler_prompt_path)
         with timed_step("assembler.call", slow_step_seconds):
             artifact = ask_structured(assembler, requirements)
-        if not isinstance(artifact, CodeArtifact):
+        if not isinstance(artifact, AssemblyArtifact):
             raise TypeError("Assembler returned an unexpected response type")
-        reviewer_prompt = build_review_prompt(artifact.code, requirements)
+        raw_code = compose_program(
+            artifact.imports,
+            function_code,
+            artifact.orchestration_code,
+            validate=False,
+        )
+        raw_revision = save_code_revision(
+            Path(state["save_dir"]),
+            raw_code,
+            "assembler_raw",
+            parent_revision=state.get("current_revision"),
+            metadata={"notes": artifact.notes},
+        )
+        reviewer_requirements = (
+            requirements
+            + "\nThe reviewed code is orchestration glue only. Preserve this scope and "
+            "do not add or reproduce operation function implementations.\n"
+            f"AVAILABLE ADDITIONAL IMPORTS:\n{artifact.imports or '(none)'}"
+        )
+        reviewer_prompt = build_review_prompt(
+            artifact.orchestration_code, reviewer_requirements
+        )
         reviewer_prompt_path = save_prompt(
             state["save_dir"],
             stage="assemble",
@@ -472,21 +545,38 @@ def create_llm_geo_graph(
         get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
         with timed_step("reviewer.call", slow_step_seconds, subject="assembly"):
             reviewed_code, review_issues = review_code(
-                reviewer, artifact.code, requirements, prompt=reviewer_prompt
+                reviewer,
+                artifact.orchestration_code,
+                reviewer_requirements,
+                prompt=reviewer_prompt,
             )
         get_logger().info("Assembly reviewed | issues=%d", len(review_issues))
-        path = Path(state["save_dir"]) / "code" / "solution.py"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(reviewed_code, encoding="utf-8")
+        assembled_code = compose_program(
+            artifact.imports, function_code, reviewed_code
+        )
+        reviewed_revision = save_code_revision(
+            Path(state["save_dir"]),
+            assembled_code,
+            "assembler_reviewed",
+            parent_revision=raw_revision["revision"],
+            metadata={"review_issues": review_issues},
+        )
+        path = publish_solution(Path(state["save_dir"]), assembled_code)
         get_logger().info("Program assembled and reviewed | path=%s", path)
         return {
-            "assembled_code": reviewed_code,
+            "assembled_code": assembled_code,
+            "code_revision": reviewed_revision["revision"],
+            "current_revision": reviewed_revision["revision"],
+            "code_revisions": state.get("code_revisions", [])
+            + [raw_revision, reviewed_revision],
             "artifacts": state.get("artifacts", []) + [str(path)],
             "status": "program_assembled",
         }
 
     def execute_program(state: LLMGeoState) -> dict[str, Any]:
         attempt = state.get("execution_attempts", 0) + 1
+        save_dir = Path(state["save_dir"])
+        save_execution_attempt(save_dir, attempt, state["assembled_code"])
         get_logger().info(
             "Executing program | attempt=%d/%d",
             attempt,
@@ -511,8 +601,17 @@ def create_llm_geo_graph(
                 execution.get("returncode"),
                 len(execution.get("new_files", [])),
             )
+        execution_record = save_execution_result(
+            save_dir,
+            attempt,
+            state.get("current_revision"),
+            execution,
+            executed=state.get("allow_code_execution", True),
+        )
         return {
             "execution": execution,
+            "execution_history": state.get("execution_history", [])
+            + [execution_record],
             "execution_attempts": attempt,
             "status": (
                 "execution_succeeded" if execution["success"] else "execution_failed"
@@ -544,7 +643,9 @@ def create_llm_geo_graph(
         COMPLETE PROGRAM:
         {state["assembled_code"]}
 
-        Return the entire corrected program, not a patch.
+        Return minimal exact-text replacements. Copy each `old` value verbatim from
+        COMPLETE PROGRAM and make it long enough to occur exactly once. Use
+        complete_code only when a localized repair is unsafe or impractical.
         """
         prompt = textwrap.dedent(prompt)
         debugger_prompt_path = save_prompt(
@@ -556,11 +657,55 @@ def create_llm_geo_graph(
         )
         get_logger().info("Debugger prompt saved | path=%s", debugger_prompt_path)
         with timed_step("debugger.call", slow_step_seconds):
-            artifact = ask_structured(debugger, prompt)
-        if not isinstance(artifact, CodeArtifact):
+            repair = ask_structured(debugger, prompt)
+        if not isinstance(repair, CodeRepair):
             raise TypeError("Debugger returned an unexpected response type")
+        try:
+            repaired_code = resolve_code_repair(state["assembled_code"], repair)
+        except (SyntaxError, ValueError) as error:
+            get_logger().warning(
+                "Minimal repair could not be applied; requesting complete code | "
+                "reason=%s",
+                error,
+            )
+            fallback_prompt = (
+                prompt
+                + "\n\nThe proposed minimal repair could not be applied:\n"
+                + str(error)
+                + "\nReturn complete_code containing the entire corrected program. "
+                "Do not return replacements."
+            )
+            fallback_prompt_path = save_prompt(
+                state["save_dir"],
+                stage="debug",
+                agent="debugger",
+                subject="program",
+                prompt=fallback_prompt,
+            )
+            get_logger().info(
+                "Debugger fallback prompt saved | path=%s", fallback_prompt_path
+            )
+            with timed_step("debugger.call", slow_step_seconds, mode="full_fallback"):
+                fallback = ask_structured(debugger, fallback_prompt)
+            if not isinstance(fallback, CodeRepair) or not fallback.complete_code:
+                raise RuntimeError("Debugger fallback returned no complete_code")
+            repaired_code = resolve_code_repair(state["assembled_code"], fallback)
+        revision = save_code_revision(
+            Path(state["save_dir"]),
+            repaired_code,
+            "debugger",
+            parent_revision=state.get("current_revision"),
+            metadata={"after_execution_attempt": state.get("execution_attempts", 0)},
+        )
+        publish_solution(Path(state["save_dir"]), repaired_code)
         get_logger().info("Program repair generated | retrying execution")
-        return {"assembled_code": artifact.code, "status": "program_repaired"}
+        return {
+            "assembled_code": repaired_code,
+            "code_revision": revision["revision"],
+            "current_revision": revision["revision"],
+            "code_revisions": state.get("code_revisions", []) + [revision],
+            "status": "program_repaired",
+        }
 
     def validate_result(state: LLMGeoState) -> dict[str, Any]:
         get_logger().info("Validating final result")
@@ -585,6 +730,9 @@ def create_llm_geo_graph(
         EXECUTION:
         {to_toon(state["execution"])}
 
+        COMPLETE PROGRAM:
+        {state["assembled_code"]}
+
         RESULT MANIFEST:
         {to_toon(manifest)}
 
@@ -592,8 +740,10 @@ def create_llm_geo_graph(
         {to_toon(deterministic_issues)}
 
         Validate task completion, numerical/geospatial plausibility, required outputs,
-        and evidence. If invalid and repairable, return the entire corrected program in
-        corrected_code.
+        and evidence. If invalid and repairable, prefer minimal exact-text replacements.
+        Copy each `old` value verbatim from the executed program and make it long enough
+        to occur exactly once. Use corrected_code only when a localized repair is unsafe
+        or impractical.
         """
         prompt = textwrap.dedent(prompt)
         validator_prompt_path = save_prompt(
@@ -610,11 +760,28 @@ def create_llm_geo_graph(
             raise TypeError("Validator returned an unexpected response type")
         issues = deterministic_issues + decision.issues
         valid = not deterministic_issues and decision.valid
+        repaired_code: str | None = None
+        if not valid and (decision.replacements or decision.corrected_code):
+            try:
+                repaired_code = resolve_code_repair(
+                    state["assembled_code"],
+                    CodeRepair(
+                        replacements=decision.replacements,
+                        complete_code=decision.corrected_code,
+                    ),
+                )
+            except (SyntaxError, ValueError) as error:
+                issues.append(f"Validator repair could not be applied: {error}")
+                get_logger().warning(
+                    "Validator repair could not be applied; delegating to debugger | "
+                    "reason=%s",
+                    error,
+                )
         update: dict[str, Any] = {
             "validation": {
                 "valid": valid,
                 "issues": issues,
-                "has_corrected_code": bool(decision.corrected_code),
+                "has_corrected_code": repaired_code is not None,
             },
             "status": "validated" if valid else "validation_failed",
         }
@@ -626,8 +793,22 @@ def create_llm_geo_graph(
                 len(issues),
                 "; ".join(issues[:3]),
             )
-        if not valid and decision.corrected_code:
-            update["assembled_code"] = decision.corrected_code
+        if repaired_code is not None:
+            revision = save_code_revision(
+                save_dir,
+                repaired_code,
+                "validator_corrected",
+                parent_revision=state.get("current_revision"),
+                metadata={
+                    "after_execution_attempt": state.get("execution_attempts", 0),
+                    "validation_issues": issues,
+                },
+            )
+            publish_solution(save_dir, repaired_code)
+            update["assembled_code"] = repaired_code
+            update["code_revision"] = revision["revision"]
+            update["current_revision"] = revision["revision"]
+            update["code_revisions"] = state.get("code_revisions", []) + [revision]
             get_logger().info("Validator supplied corrected program | re-executing")
         return update
 
@@ -839,6 +1020,10 @@ def run_llm_geo(
         "plan_attempts": 0,
         "execution_attempts": 0,
         "operations": [],
+        "code_revision": 0,
+        "current_revision": 0,
+        "code_revisions": [],
+        "execution_history": [],
         "retrieved_operation_ids": [],
         "artifacts": system_artifacts,
         "execution_trace": [],

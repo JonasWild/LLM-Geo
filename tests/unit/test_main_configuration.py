@@ -97,7 +97,9 @@ class EnvironmentConfigurationTests(unittest.TestCase):
             retriever = main_module.initialize_operation_retriever()
 
         embeddings.assert_called_once_with(
-            model="embedding-model", api_key="embedding-key"
+            model="embedding-model",
+            api_key="embedding-key",
+            check_embedding_ctx_length=False,
         )
         self.assertIsNotNone(retriever)
 
