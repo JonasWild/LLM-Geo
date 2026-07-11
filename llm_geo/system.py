@@ -8,6 +8,7 @@ import re
 import sqlite3
 import textwrap
 import time
+import traceback
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,7 +170,7 @@ def create_llm_geo_graph(
         get_logger().info("Retrieving data | providers=%d", len(provider_tools))
         prompt = textwrap.dedent(f"""
         TASK:
-        {state['task']}
+        {state["task"]}
 
         {provider_tool_instructions(data_directory)}
 
@@ -192,7 +193,9 @@ def create_llm_geo_graph(
                 raise TypeError("Retriever returned an unexpected response type")
             retrieved = validate_provider_results(raw_results, data_directory)
             sources_by_location = {source.location: source for source in retrieved}
-            if len(decision.selected_locations) != len(set(decision.selected_locations)):
+            if len(decision.selected_locations) != len(
+                set(decision.selected_locations)
+            ):
                 raise ValueError("Retriever selected the same location more than once.")
             unknown = set(decision.selected_locations) - set(sources_by_location)
             if unknown:
@@ -200,13 +203,16 @@ def create_llm_geo_graph(
                     "Retriever selected locations not returned by a provider: "
                     + ", ".join(sorted(unknown))
                 )
-            sources = [sources_by_location[path] for path in decision.selected_locations]
+            sources = [
+                sources_by_location[path] for path in decision.selected_locations
+            ]
             get_logger().info("Data retrieved | sources=%d", len(sources))
             return {
                 "data_sources": [source.model_dump(mode="json") for source in sources],
                 "status": "sources_retrieved",
             }
         except Exception as error:
+            traceback.print_exception(error)
             message = f"{type(error).__name__}: {error}"
             get_logger().warning("Data retrieval failed | reason=%s", message)
             return {"retrieval_error": message, "status": "retrieval_failed"}
@@ -416,13 +422,13 @@ def create_llm_geo_graph(
         function_code = "\n\n".join(item["code"] for item in state["operations"])
         requirements = f"""
         TASK:
-        {state['task']}
+        {state["task"]}
 
         DATA SOURCES:
-        {to_toon(state['data_sources'])}
+        {to_toon(state["data_sources"])}
 
         WORKFLOW PLAN:
-        {to_toon(state['plan'])}
+        {to_toon(state["plan"])}
 
         REVIEWED FUNCTIONS:
         {function_code}
@@ -474,10 +480,10 @@ def create_llm_geo_graph(
         get_logger().info("Generating direct solution | graph decomposition=skipped")
         requirements = f"""
         TASK:
-        {state['task']}
+        {state["task"]}
 
         INSPECTED SOURCES:
-        {to_toon(state['data_sources'])}
+        {to_toon(state["data_sources"])}
 
         Return a complete executable program. Print important results, save requested
         maps/charts, and write llm_geo_result.json with a summary, serializable result
@@ -532,9 +538,7 @@ def create_llm_geo_graph(
             }
             get_logger().warning("Execution skipped | code execution is disabled")
         else:
-            execution = execute_code(
-                state["assembled_code"], Path(state["save_dir"])
-            )
+            execution = execute_code(state["assembled_code"], Path(state["save_dir"]))
         return {
             "execution": execution,
             "execution_attempts": attempt,
@@ -548,9 +552,7 @@ def create_llm_geo_graph(
             return "validate"
         if not state.get("allow_code_execution", True):
             return "failed"
-        if state.get("execution_attempts", 0) < state.get(
-            "max_execution_attempts", 10
-        ):
+        if state.get("execution_attempts", 0) < state.get("max_execution_attempts", 10):
             return "debug"
         return "failed"
 
@@ -561,17 +563,17 @@ def create_llm_geo_graph(
         )
         prompt = f"""
         TASK:
-        {state['task']}
+        {state["task"]}
 
         DATA SOURCES:
-        {to_toon(state['data_sources'])}
+        {to_toon(state["data_sources"])}
 
         FAILURE OR VALIDATION ISSUES:
-        {to_toon(state.get('execution', {}))}
-        {to_toon(state.get('validation', {}))}
+        {to_toon(state.get("execution", {}))}
+        {to_toon(state.get("validation", {}))}
 
         COMPLETE PROGRAM:
-        {state['assembled_code']}
+        {state["assembled_code"]}
 
         Return the entire corrected program, not a patch.
         """
@@ -605,13 +607,13 @@ def create_llm_geo_graph(
             deterministic_issues.append("llm_geo_result.json was not created.")
         prompt = f"""
         TASK:
-        {state['task']}
+        {state["task"]}
 
         PLAN:
-        {to_toon(state.get('plan', {}))}
+        {to_toon(state.get("plan", {}))}
 
         EXECUTION:
-        {to_toon(state['execution'])}
+        {to_toon(state["execution"])}
 
         RESULT MANIFEST:
         {to_toon(manifest)}
@@ -661,13 +663,9 @@ def create_llm_geo_graph(
     def validation_route(state: LLMGeoState) -> str:
         if state["validation"]["valid"]:
             return "complete"
-        if state.get("execution_attempts", 0) < state.get(
-            "max_execution_attempts", 10
-        ):
+        if state.get("execution_attempts", 0) < state.get("max_execution_attempts", 10):
             return (
-                "execute"
-                if state["validation"].get("has_corrected_code")
-                else "debug"
+                "execute" if state["validation"].get("has_corrected_code") else "debug"
             )
         return "failed"
 
@@ -682,7 +680,9 @@ def create_llm_geo_graph(
         write_execution_graph_artifacts(trace, save_dir)
         artifact_paths = sorted(snapshot_files(save_dir))
         state_path = save_dir / f"{state['task_name']}.state.json"
-        persisted = {key: value for key, value in state.items() if key != "assembled_code"}
+        persisted = {
+            key: value for key, value in state.items() if key != "assembled_code"
+        }
         persisted.update(
             {
                 "status": "complete",
@@ -720,7 +720,9 @@ def create_llm_geo_graph(
         ]
         write_execution_graph_artifacts(trace, save_dir)
         state_path = save_dir / f"{state['task_name']}.state.json"
-        persisted = {key: value for key, value in state.items() if key != "assembled_code"}
+        persisted = {
+            key: value for key, value in state.items() if key != "assembled_code"
+        }
         artifact_paths = sorted(snapshot_files(save_dir))
         persisted.update(
             {
@@ -740,7 +742,9 @@ def create_llm_geo_graph(
         }
 
     graph = StateGraph(LLMGeoState)
-    graph.add_node("retrieve_sources", traced_node("retrieve_sources", retrieve_sources))
+    graph.add_node(
+        "retrieve_sources", traced_node("retrieve_sources", retrieve_sources)
+    )
     graph.add_node("inspect_sources", traced_node("inspect_sources", inspect_sources))
     graph.add_node("plan_workflow", traced_node("plan_workflow", plan_workflow))
     graph.add_node("validate_plan", traced_node("validate_plan", validate_plan))
@@ -752,7 +756,9 @@ def create_llm_geo_graph(
         "generate_direct_program",
         traced_node("generate_direct_program", generate_direct_program),
     )
-    graph.add_node("assemble_program", traced_node("assemble_program", assemble_program))
+    graph.add_node(
+        "assemble_program", traced_node("assemble_program", assemble_program)
+    )
     graph.add_node("execute_program", traced_node("execute_program", execute_program))
     graph.add_node("debug_program", traced_node("debug_program", debug_program))
     graph.add_node("validate_result", traced_node("validate_result", validate_result))
@@ -821,6 +827,7 @@ def run_llm_geo(
     max_plan_attempts: int = 3,
     max_execution_attempts: int = 10,
     log_level: int = logging.INFO,
+    log_http: bool = True,
 ) -> LLMGeoState:
     """Create an isolated run and execute the complete LLM-GEO graph."""
     safe_task_name = re.sub(r"[^A-Za-z0-9._-]+", "_", task_name.strip()).strip("._")
@@ -831,7 +838,7 @@ def run_llm_geo(
     destination.mkdir(parents=True, exist_ok=True)
     for directory_name in ("prompts", "data", "workflow", "code", "results"):
         (destination / directory_name).mkdir(exist_ok=True)
-    configure_logging(log_level, destination / "llm_geo.log")
+    configure_logging(log_level, destination / "llm_geo.log", log_http=log_http)
     get_logger().info(
         "Workflow started | task=%s | mode=%s | providers=%d | output=%s",
         safe_task_name,
@@ -888,6 +895,7 @@ def resume_llm_geo(
     retrieval_tools: Sequence[BaseTool] = (),
     registered_operations: Sequence[RegisteredOperation] = (),
     log_level: int = logging.INFO,
+    log_http: bool = True,
 ) -> LLMGeoState:
     """Resume an interrupted run from its durable checkpoint."""
     destination = Path(run_dir).resolve()
@@ -898,7 +906,7 @@ def resume_llm_geo(
         )
     checkpoint_path = checkpoints[0]
     task_name = checkpoint_path.name.removesuffix(".checkpoints.sqlite")
-    configure_logging(log_level, destination / "llm_geo.log")
+    configure_logging(log_level, destination / "llm_geo.log", log_http=log_http)
     get_logger().info(
         "Resuming workflow | task=%s | checkpoint=%s", task_name, checkpoint_path
     )

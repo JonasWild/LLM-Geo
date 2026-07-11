@@ -5,22 +5,26 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import BaseTool
 
 from llm_geo.middleware.logging import configure_logging, get_logger
 from llm_geo.operations import registered_operations
-import llm_geo.operations.basic
-import llm_geo.operations.generated
 from llm_geo.subagents.supervisor import create_geo_agent, run_geo_agent
 from llm_geo.system import run_llm_geo
 from llm_geo.tools.public_data_providers import PUBLIC_RETRIEVAL_TOOLS
 
-load_dotenv()
+if sys.platform == 'win32':
+    import pip_system_certs.wrapt_requests
 
+    pip_system_certs.wrapt_requests.inject_truststore()
 
 def _environment_bool(name: str, default: bool) -> bool:
     """Read a conventional boolean value from the environment."""
@@ -65,6 +69,41 @@ def _environment_log_level(name: str, default: int) -> int:
 # ---------------------------------------------------------------------------
 
 TASK = "Finde die urbane Gebiete mittels overpass zwischen Magedburg und Hohes Holz und stelle sie als png dar."
+
+TASK = """
+```
+coords_latlon=[
+    (52.15995472769272, 11.175482626854976),
+    (52.12357669105406, 11.071887076720898),
+    (52.099033902796656, 11.234383588578686),
+    (52.093345131708986, 11.291868995068482),
+    (52.09865453410721, 11.259324112064796),
+    (52.09840031665556, 11.178141307841926),
+    (52.16989765458063, 11.240398225811637),
+    (52.09252130832008, 11.154333967570254),
+    (52.13788959193653, 11.091422237662943),
+    (52.141548691146795, 11.32608184518228),
+    (52.09563438305892, 11.293991719352936),
+    (52.10089941396949, 11.298974658146317),
+    (52.0935070621907, 11.139002406753155),
+    (52.15992543802094, 11.327600135322013),
+    (52.15837860999751, 11.168890129175152),
+    (52.118178728522054, 11.317112555354184),
+    (52.09587893233216, 11.27745661214289),
+    (52.07480910547546, 11.094384694737808),
+    (52.14833123951739, 11.127341727137027),
+    (52.1278198204315, 11.340525155358376),
+    (52.165742943249334, 11.304459361752187),
+    (52.15692596390275, 11.1628456676591),
+    (52.12028794270609, 11.008870428520757),
+    (52.097752824389396, 11.195809386685433),
+    (52.15072202658883, 11.325284574975335),
+],
+```
+Suche in gegebenem AOI nach Städten und urbanen Gebiete und stelle diese als neuen Layer “urbaneGebiete” auf dem SitaWare Plan “LayerTest” dar! Bleibe so minimal wie möglich: Query die urbanen Gebiete durch einen einzigen Call (als Task) in eine .geojson file und in einem zweiten task(write-oplan) schreibe diese .geojson file in den Plan! Mehr als zwei sequentielle Tasks dürfen nicht notwendig sein!!!
+
+"""
+
 TASK_NAME = "llm_geo_task"
 # Register provider tools here. Every tool must materialize GeoJSON in the run data
 # directory and follow llm_geo.tools.data_retrieval.provider_tool_instructions().
@@ -92,9 +131,7 @@ OUTPUT_ROOT = Path(os.getenv("LLM_GEO_OUTPUT_ROOT", "output"))
 
 # Bounded autonomous correction.
 MAX_PLAN_ATTEMPTS = _environment_positive_int("LLM_GEO_MAX_PLAN_ATTEMPTS", 3)
-MAX_EXECUTION_ATTEMPTS = _environment_positive_int(
-    "LLM_GEO_MAX_EXECUTION_ATTEMPTS", 10
-)
+MAX_EXECUTION_ATTEMPTS = _environment_positive_int("LLM_GEO_MAX_EXECUTION_ATTEMPTS", 10)
 
 # INFO: concise progress. DEBUG: additional file detail.
 LOG_LEVEL = _environment_log_level("LLM_GEO_LOG_LEVEL", logging.INFO)
@@ -142,6 +179,7 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
             max_plan_attempts=MAX_PLAN_ATTEMPTS,
             max_execution_attempts=MAX_EXECUTION_ATTEMPTS,
             log_level=LOG_LEVEL,
+            log_http=LOG_HTTP,
         )
         result = run_geo_agent(agent, task, task_name)
     else:
@@ -158,6 +196,7 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
             max_plan_attempts=MAX_PLAN_ATTEMPTS,
             max_execution_attempts=MAX_EXECUTION_ATTEMPTS,
             log_level=LOG_LEVEL,
+            log_http=LOG_HTTP,
         )
     logger.info(
         "Run finished | status=%s | output=%s",
