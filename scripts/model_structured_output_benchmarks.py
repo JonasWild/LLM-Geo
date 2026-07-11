@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
+from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
+import statistics
 import sys
 import time
 from typing import Literal
@@ -84,26 +88,97 @@ def run_probe(model, strategy: str, with_tool: bool) -> tuple[bool, str, float]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--strategy", choices=STRATEGIES, action="append")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=100,
+        help="Number of repetitions per strategy/tool configuration (default: 100)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("structured_output_benchmark_results.json"),
+        help="JSON results file",
+    )
     args = parser.parse_args()
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
     load_dotenv()
     model_name, provider, base_url, model = initialize_model()
     strategies = tuple(args.strategy or STRATEGIES)
     print(f"Model: {model_name}")
     print(f"Provider: {provider or 'inferred'}")
     print(f"Endpoint: {base_url or 'provider default'}")
+    print(f"Runs per configuration: {args.runs}")
     print()
-    failures = 0
+    total_failures = 0
+    configurations: list[dict[str, object]] = []
     for with_tool in (False, True):
         print("WITH TOOL" if with_tool else "WITHOUT TOOL")
         for strategy in strategies:
-            passed, detail, duration = run_probe(model, strategy, with_tool)
-            failures += not passed
+            passes = 0
+            durations: list[float] = []
+            failure_details: Counter[str] = Counter()
+            for run_number in range(1, args.runs + 1):
+                passed, detail, duration = run_probe(model, strategy, with_tool)
+                passes += int(passed)
+                durations.append(duration)
+                if not passed:
+                    failure_details[detail] += 1
+                if args.runs >= 20 and (
+                    run_number % 10 == 0 or run_number == args.runs
+                ):
+                    print(
+                        f"  {strategy:<10} progress {run_number:>3}/{args.runs}",
+                        end="\r",
+                        flush=True,
+                    )
+            failures = args.runs - passes
+            total_failures += failures
+            pass_rate = passes / args.runs
+            mean_duration = statistics.fmean(durations)
             print(
-                f"  {strategy:<10} {'PASS' if passed else 'FAIL':<4} "
-                f"{duration:6.2f}s  {detail}"
+                f"  {strategy:<10} pass={passes:>3} fail={failures:>3} "
+                f"rate={pass_rate:6.1%} mean={mean_duration:6.2f}s"
+            )
+            common_failures = failure_details.most_common(3)
+            for detail, count in common_failures:
+                print(f"    {count:>3}x {detail}")
+            configurations.append(
+                {
+                    "strategy": strategy,
+                    "with_tool": with_tool,
+                    "runs": args.runs,
+                    "passes": passes,
+                    "failures": failures,
+                    "pass_rate": pass_rate,
+                    "duration_seconds": {
+                        "mean": mean_duration,
+                        "median": statistics.median(durations),
+                        "min": min(durations),
+                        "max": max(durations),
+                    },
+                    "failure_examples": [
+                        {"count": count, "detail": detail}
+                        for detail, count in common_failures
+                    ],
+                }
             )
         print()
-    return int(failures > 0)
+    report = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "model": model_name,
+        "provider": provider or "inferred",
+        "endpoint": base_url or "provider default",
+        "runs_per_configuration": args.runs,
+        "configurations": configurations,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    print(f"Results written to {args.output.resolve()}")
+    return int(total_failures > 0)
 
 
 if __name__ == "__main__":
