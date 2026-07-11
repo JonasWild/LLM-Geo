@@ -171,6 +171,18 @@ LLM_GEO_OPENAPI_GEO_MCP_API_KEY=
 LLM_GEO_OPENAPI_TIMEOUT=30
 ```
 
+For local models that support JSON mode but do not reliably call LangChain's
+synthetic structured-output tool, select application-side Pydantic parsing:
+
+```dotenv
+LLM_GEO_STRUCTURED_OUTPUT=json_mode
+```
+
+The supported values are `auto` (LangChain's default selection), `provider`
+(provider-native JSON Schema), and `json_mode` (`response_format=json_object` plus
+Pydantic validation). JSON mode runs retrieval tools first and parses their results in
+a separate model call.
+
 The generator currently supports path, query, header, and JSON request inputs plus
 JSON `2xx` responses. Multipart bodies, binary responses, callbacks, and external
 schema references are skipped rather than guessed.
