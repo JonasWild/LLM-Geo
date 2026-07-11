@@ -33,6 +33,7 @@ def create_geo_agent(
     log_level: int = logging.INFO,
     log_http: bool = True,
     generate_mermaid: bool = True,
+    slow_step_seconds: float = 10.0,
 ) -> CompiledStateGraph:
     """Create a supervisor that delegates complete jobs to LLM-GEO."""
 
@@ -58,6 +59,7 @@ def create_geo_agent(
             log_level=log_level,
             log_http=log_http,
             generate_mermaid=generate_mermaid,
+            slow_step_seconds=slow_step_seconds,
         )
         return to_toon(
             {

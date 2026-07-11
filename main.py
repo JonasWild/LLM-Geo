@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -16,7 +17,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from llm_geo.middleware.logging import configure_logging, get_logger
-from llm_geo.operations import registered_operations
+from llm_geo.operations import load_all_operations
 from llm_geo.subagents.supervisor import create_geo_agent, run_geo_agent
 from llm_geo.system import run_llm_geo
 from llm_geo.tools.public_data_providers import PUBLIC_RETRIEVAL_TOOLS
@@ -50,6 +51,20 @@ def _environment_positive_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be a positive integer") from exc
     if value < 1:
         raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _environment_positive_float(name: str, default: float) -> float:
+    """Read a positive floating-point value from the environment."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive number") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive number")
     return value
 
 
@@ -108,8 +123,8 @@ TASK_NAME = "llm_geo_task"
 # Register provider tools here. Every tool must materialize GeoJSON in the run data
 # directory and follow llm_geo.tools.data_retrieval.provider_tool_instructions().
 RETRIEVAL_TOOLS: list[BaseTool] = PUBLIC_RETRIEVAL_TOOLS
-# Import modules containing @code functions before this line, then expose them here.
-REGISTERED_OPERATIONS = registered_operations()
+# Import every operations module so its @code functions populate the registry.
+REGISTERED_OPERATIONS = load_all_operations()
 
 # Durable runtime configuration belongs in .env. Keep task-specific inputs below or
 # pass them through the CLI. An empty model enables the offline readiness check.
@@ -137,6 +152,7 @@ MAX_EXECUTION_ATTEMPTS = _environment_positive_int("LLM_GEO_MAX_EXECUTION_ATTEMP
 LOG_LEVEL = _environment_log_level("LLM_GEO_LOG_LEVEL", logging.INFO)
 LOG_HTTP = _environment_bool("LLM_GEO_LOG_HTTP", True)
 GENERATE_MERMAID = _environment_bool("LLM_GEO_GENERATE_MERMAID", True)
+SLOW_STEP_SECONDS = _environment_positive_float("LLM_GEO_SLOW_STEP_SECONDS", 10.0)
 
 
 def initialize_model():
@@ -189,6 +205,7 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
             log_level=LOG_LEVEL,
             log_http=LOG_HTTP,
             generate_mermaid=GENERATE_MERMAID,
+            slow_step_seconds=SLOW_STEP_SECONDS,
         )
         result = run_geo_agent(agent, task, task_name)
     else:
@@ -207,6 +224,7 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
             log_level=LOG_LEVEL,
             log_http=LOG_HTTP,
             generate_mermaid=GENERATE_MERMAID,
+            slow_step_seconds=SLOW_STEP_SECONDS,
         )
     logger.info(
         "Run finished | status=%s | output=%s",

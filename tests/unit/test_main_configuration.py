@@ -37,6 +37,19 @@ class EnvironmentConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SETTING"):
                 main_module._environment_log_level("SETTING", logging.INFO)
 
+        for raw_value in ("0", "-1", "slow", "nan", "inf"):
+            with self.subTest(raw_value=raw_value), patch.dict(
+                os.environ, {"SETTING": raw_value}
+            ):
+                with self.assertRaisesRegex(ValueError, "SETTING"):
+                    main_module._environment_positive_float("SETTING", 10.0)
+
+    def test_positive_float_parser_accepts_fractional_seconds(self) -> None:
+        with patch.dict(os.environ, {"SETTING": "2.5"}):
+            self.assertEqual(
+                main_module._environment_positive_float("SETTING", 10.0), 2.5
+            )
+
     @patch.object(main_module, "ChatOpenAI")
     def test_model_initializer_passes_model_and_custom_base_url(
         self, chat_model: Mock

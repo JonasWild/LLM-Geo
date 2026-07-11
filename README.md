@@ -35,8 +35,9 @@ OPENAI_BASE_URL=http://localhost:1234/v1
 The remaining durable runtime settings are documented in `.env.example`:
 `LLM_GEO_DIRECT_MODE`, `LLM_GEO_USE_DEEP_AGENT`,
 `LLM_GEO_ALLOW_CODE_EXECUTION`, `LLM_GEO_OUTPUT_ROOT`, retry limits,
-`LLM_GEO_LOG_LEVEL`, and `LLM_GEO_GENERATE_MERMAID`. Values already set in the
-shell take precedence over `.env`.
+`LLM_GEO_LOG_LEVEL`, `LLM_GEO_GENERATE_MERMAID`, and
+`LLM_GEO_SLOW_STEP_SECONDS`. Values already set in the shell take precedence over
+`.env`.
 
 Outgoing model, Overpass, and Nominatim HTTP request logging is enabled by default:
 
@@ -52,6 +53,8 @@ query parameters, so use that setting only where geographic queries may safely a
 Set `LLM_GEO_LOG_HTTP=false` to disable all HTTP client request logging.
 Set `LLM_GEO_GENERATE_MERMAID=false` to skip both Mermaid source and PNG workflow
 diagnostics. Structured execution tracing remains enabled.
+Important internal operations exceeding `LLM_GEO_SLOW_STEP_SECONDS` (default: 10)
+produce a concise `Slow step` warning with their measured duration.
 
 Run the default task from `main.py`, or override the per-run values on the command
 line:

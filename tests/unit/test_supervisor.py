@@ -83,6 +83,7 @@ class SupervisorTests(unittest.TestCase):
             max_execution_attempts=5,
             log_level=logging.DEBUG,
             generate_mermaid=False,
+            slow_step_seconds=2.5,
         )
 
         result = run_geo_agent(agent, "Map the parks", "configured_name")
@@ -101,6 +102,7 @@ class SupervisorTests(unittest.TestCase):
             log_level=logging.DEBUG,
             log_http=True,
             generate_mermaid=False,
+            slow_step_seconds=2.5,
         )
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["save_dir"], "output/configured/run")
@@ -148,6 +150,7 @@ class SupervisorTests(unittest.TestCase):
             log_level=main_module.LOG_LEVEL,
             log_http=main_module.LOG_HTTP,
             generate_mermaid=main_module.GENERATE_MERMAID,
+            slow_step_seconds=main_module.SLOW_STEP_SECONDS,
         )
         run_agent.assert_called_once_with(compiled_agent, "Map parks", "parks")
 
