@@ -169,7 +169,7 @@ def _request_overpass(query: str) -> tuple[requests.Response, str]:
     raise RuntimeError("All Overpass endpoints failed")
 
 
-@code
+@code(category="retrieval")
 def overpass_to_geojson(
     overpass_ql: str, output_path: str, description: str
 ) -> gpd.GeoDataFrame:
@@ -199,7 +199,7 @@ def overpass_to_geojson(
     return _as_wgs84_frame(collection)
 
 
-@code
+@code(category="retrieval")
 def nominatim_to_geojson(
     query: str,
     output_path: str,

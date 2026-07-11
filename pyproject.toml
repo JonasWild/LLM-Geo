@@ -38,6 +38,13 @@ package-mode = false
 [tool.poetry.group.eval.dependencies]
 deepeval = "4.0.7"
 
+[tool.pytest.ini_options]
+markers = [
+    "eval: DeepEval-based evaluation tests",
+    "llm: tests that require a live language model",
+    "integration: tests spanning the complete agent workflow",
+]
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"

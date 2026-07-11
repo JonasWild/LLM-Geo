@@ -51,18 +51,39 @@ def validate_workflow_plan(
                 issues.append(f"Registered operation {node.id!r} has no operation ID.")
             if node.implementation == "generated" and node.registered_operation_id:
                 issues.append(f"Generated operation {node.id!r} has a registered operation ID.")
-            if node.implementation == "generated" and node.literal_arguments:
-                issues.append(
-                    f"Generated operation {node.id!r} cannot use literal arguments."
-                )
             if node.implementation == "generated" and graph.in_degree(node.id) == 0:
                 issues.append(f"Generated operation {node.id!r} has no input data.")
+            if node.implementation == "generated":
+                graph_input_ids = set(graph.predecessors(node.id))
+                for literal_name in node.literal_arguments:
+                    if not literal_name.isidentifier():
+                        issues.append(
+                            f"Generated operation {node.id!r} has invalid literal "
+                            f"parameter name {literal_name!r}."
+                        )
+                    if literal_name in graph_input_ids:
+                        issues.append(
+                            f"Generated operation {node.id!r} supplies {literal_name!r} "
+                            "both as graph input and literal argument."
+                        )
         elif (
             node.implementation != "generated"
             or node.registered_operation_id
             or node.literal_arguments
         ):
             issues.append(f"Data node {node.id!r} cannot select an implementation.")
+        if node.kind == "data":
+            producer_count = graph.in_degree(node.id)
+            if producer_count > 1:
+                issues.append(
+                    f"Data node {node.id!r} has {producer_count} producing operations; "
+                    "each data node must have at most one producer."
+                )
+            if producer_count == 0 and not node.data_path:
+                issues.append(
+                    f"Data node {node.id!r} has no producing operation and no "
+                    "existing source path."
+                )
     sinks = [node for node in plan.nodes if graph.out_degree(node.id) == 0]
     if not sinks or any(node.kind != "data" for node in sinks):
         issues.append("Every workflow sink must be a data/result node.")
@@ -81,6 +102,27 @@ def validate_workflow_plan(
                 f"{node.registered_operation_id!r}."
             )
             continue
+        graph_input_ids = list(graph.predecessors(node.id))
+        if operation.category == "retrieval" and graph_input_ids:
+            issues.append(
+                f"Retrieval operation {node.id!r} must be a root operation with no "
+                f"graph inputs, but receives {graph_input_ids}. Supply its request "
+                "and configuration through literal_arguments."
+            )
+        if operation.category == "retrieval" and "output_path" in node.literal_arguments:
+            output_paths = [
+                node_map[output_id].data_path
+                for output_id in graph.successors(node.id)
+                if node_map[output_id].data_path
+            ]
+            expected_output_path = node.literal_arguments["output_path"]
+            if output_paths and output_paths != [expected_output_path]:
+                issues.append(
+                    f"Retrieval operation {node.id!r} writes {expected_output_path!r}, "
+                    f"but its output data node declares {output_paths}. Add any "
+                    "required conversion or rendering operation before a different "
+                    "output format."
+                )
         parameter_names = [name for name, _, _ in operation.inputs]
         literal_names = set(node.literal_arguments)
         unknown_literals = literal_names - set(parameter_names)
@@ -95,7 +137,11 @@ def validate_workflow_plan(
         graph_input_count = graph.in_degree(node.id)
         if graph_input_count > len(available_graph_parameters):
             issues.append(
-                f"Registered operation {node.id!r} has too many graph inputs."
+                f"Registered operation {node.id!r} has {graph_input_count} graph "
+                f"inputs {graph_input_ids}, but {operation.id!r} has only "
+                f"{len(available_graph_parameters)} parameters available for graph "
+                f"binding: {available_graph_parameters}. Parameters supplied as "
+                f"literals: {sorted(literal_names)}."
             )
         else:
             graph_bound = set(available_graph_parameters[:graph_input_count])
@@ -197,12 +243,20 @@ def operation_contract(plan: WorkflowPlan, operation_id: str) -> dict[str, Any]:
     node_map = {node.id: node for node in plan.nodes}
     inputs = list(graph.predecessors(operation_id))
     outputs = list(graph.successors(operation_id))
+    node = node_map[operation_id]
+    # Registered-operation bridges bind their literals internally. Generated
+    # functions expose task-known literals as explicit parameters instead.
+    literal_arguments = (
+        dict(node.literal_arguments) if node.implementation == "generated" else {}
+    )
+    parameters = [*inputs, *literal_arguments]
     return {
         "node_id": operation_id,
         "description": node_map[operation_id].description,
         "inputs": inputs,
+        "literal_arguments": literal_arguments,
         "outputs": outputs,
-        "signature": f"def {operation_id}({', '.join(inputs)}):",
+        "signature": f"def {operation_id}({', '.join(parameters)}):",
         "return_statement": f"return {', '.join(outputs)}",
     }
 

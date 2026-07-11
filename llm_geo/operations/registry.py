@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from typing import Any, Callable, get_type_hints
+from typing import Any, Callable, Literal, get_type_hints, overload
 
 
 @dataclass(frozen=True)
@@ -20,10 +20,12 @@ class RegisteredOperation:
     defaults: dict[str, Any]
     output_type: str
     output_description: str
+    category: Literal["retrieval", "transformation"] = "transformation"
 
     def catalog_entry(self) -> dict[str, object]:
         return {
             "id": self.id,
+            "category": self.category,
             "description": self.description,
             "inputs": [
                 {
@@ -45,8 +47,28 @@ class RegisteredOperation:
 _OPERATIONS: dict[str, RegisteredOperation] = {}
 
 
-def code(function: Callable[..., object]) -> Callable[..., object]:
+@overload
+def code(function: Callable[..., object]) -> Callable[..., object]: ...
+
+
+@overload
+def code(
+    function: None = None,
+    *,
+    category: Literal["retrieval", "transformation"] = "transformation",
+) -> Callable[[Callable[..., object]], Callable[..., object]]: ...
+
+
+def code(
+    function: Callable[..., object] | None = None,
+    *,
+    category: Literal["retrieval", "transformation"] = "transformation",
+) -> Callable[..., object]:
     """Register one fully typed, documented, top-level trusted operation."""
+    if function is None:
+        return lambda decorated: code(decorated, category=category)
+    if category not in {"retrieval", "transformation"}:
+        raise ValueError(f"Unsupported @code operation category: {category!r}")
     if "<locals>" in function.__qualname__ or "." in function.__qualname__:
         raise TypeError("@code functions must be defined at module scope")
     signature = inspect.signature(function)
@@ -87,6 +109,7 @@ def code(function: Callable[..., object]) -> Callable[..., object]:
         defaults=defaults,
         output_type=_type_name(hints["return"]),
         output_description=result,
+        category=category,
     )
     return function
 

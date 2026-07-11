@@ -315,18 +315,40 @@ def create_llm_geo_graph(
             f"TASK:\n{state['task']}\n\n"
             f"{previous_plan_section}PREVIOUS PLAN ISSUES TO CORRECT:\n"
             f"{to_toon(state.get('plan_issues', []))}\n\n"
-            "Return one DAG containing retrieval, transformation, and output. Each "
+            "Return the smallest task-complete DAG containing retrieval and the "
+            "requested output. Include transformation operations only when the "
+            "requested result actually requires transformation; retrieval output "
+            "may feed a final output operation or result directly. Each "
             "edge must alternate data and operation. Retrieval must use matching "
             "registered operations; their outputs are EPSG:4326 GeoDataFrames also "
             "persisted as GeoJSON. Put task-derived scalar/configuration values in "
-            "the operation's literal_arguments. Incoming data edges bind in declared "
-            "parameter order to parameters not supplied as literals. Data nodes must "
+            "the operation's literal_arguments. For registered operations, incoming "
+            "data edges bind in declared parameter order to parameters not supplied "
+            "as literals. Generated operations may also use literal_arguments for "
+            "task-known scalar/configuration values; these become explicit function "
+            "parameters and orchestration passes their values. Data nodes must "
             "explicitly set implementation to 'generated', registered_operation_id "
             "to null, and generation_reason to null. Only operation nodes select an "
             "implementation: for a matching registered operation, set it to "
             "'registered' and set registered_operation_id exactly to the catalog ID. "
             "A registered retrieval operation may have no incoming data edge when "
             "literal arguments and defaults satisfy its parameters. "
+            "\n\nDATA ORIGIN RULES:\n"
+            "- Every data node must be produced by exactly one preceding operation, "
+            "unless it represents an explicitly provided existing file and sets "
+            "data_path to that file.\n"
+            "- Start each external-data branch with a registered operation whose "
+            "category is 'retrieval'. Retrieval operations have no incoming data "
+            "edges; put queries, requests, locations, output paths, and other "
+            "task-known configuration in literal_arguments.\n"
+            "- Transformation operations may consume only data nodes produced "
+            "earlier in the DAG. Create one incoming edge for each dataset parameter.\n"
+            "- Values known directly from the task are literals for both registered "
+            "and generated operations. Values returned by "
+            "earlier operations are graph inputs. Never supply one parameter both "
+            "ways, and never represent scalar configuration as a data node.\n"
+            "- Example flow: retrieve_buildings -> buildings; retrieve_roads -> "
+            "roads; buildings + roads -> create_urban_layer -> urban_layer.\n\n"
             "For a generated operation, use implementation 'generated', omit "
             "registered_operation_id, and provide a specific generation_reason."
         )
@@ -409,6 +431,7 @@ def create_llm_geo_graph(
                     description=contract["description"],
                     inputs=contract["inputs"],
                     outputs=contract["outputs"],
+                    literal_arguments=contract["literal_arguments"],
                     code=bridge_code,
                     registered_operation_id=registered.id,
                 ).model_dump(mode="json")
@@ -424,7 +447,10 @@ def create_llm_geo_graph(
                 f"TASK:\n{state['task']}\n\nLOCAL WORKFLOW CONTEXT:\n"
                 f"{to_toon(context)}\n\nThe returned code must start "
                 f"with `{contract['signature']}` and end by returning exactly "
-                f"{contract['outputs']}. Do not call the function."
+                f"{contract['outputs']}. Literal parameters and their runtime values "
+                f"are {contract['literal_arguments']!r}; use the parameters in the "
+                "implementation rather than hard-coding those values. Do not call "
+                "the function."
             )
             coder_prompt_path = save_prompt(
                 state["save_dir"],
@@ -465,6 +491,7 @@ def create_llm_geo_graph(
                 description=contract["description"],
                 inputs=contract["inputs"],
                 outputs=contract["outputs"],
+                literal_arguments=contract["literal_arguments"],
                 code=reviewed_code,
                 review_issues=review_issues,
             ).model_dump(mode="json")
@@ -479,7 +506,13 @@ def create_llm_geo_graph(
             {
                 key: value
                 for key, value in item.items()
-                if key in {"node_id", "description", "inputs", "outputs"}
+                if key in {
+                    "node_id",
+                    "description",
+                    "inputs",
+                    "outputs",
+                    "literal_arguments",
+                }
             }
             for item in state["operations"]
         ]
@@ -495,7 +528,8 @@ def create_llm_geo_graph(
 
         Return only additional imports and orchestration_code. The orchestration code
         must define assemble_solution(), call the reviewed functions in dependency
-        order, and call assemble_solution() at the end. Do not reproduce any reviewed
+        order, pass every interface's literal_arguments as keyword arguments using
+        exactly the supplied values, and call assemble_solution() at the end. Do not reproduce any reviewed
         function. Print important results. Save requested maps/charts and write
         llm_geo_result.json in the current working directory, which is the run's
         results directory. Do not use an if __name__ guard.

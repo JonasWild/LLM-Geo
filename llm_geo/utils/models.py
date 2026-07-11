@@ -108,6 +108,7 @@ class WorkflowStep(BaseModel):
     description: str
     inputs: list[str]
     outputs: list[str]
+    literal_arguments: dict[str, Any] = Field(default_factory=dict)
     code: str
     review_issues: list[str] = Field(default_factory=list)
     registered_operation_id: str | None = None

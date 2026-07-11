@@ -142,6 +142,12 @@ def filter_named_places(features: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
   return features.loc[features["name"].notna()].copy()
 ```
 
+Operations default to the `transformation` category. Data-acquisition operations
+should use `@code(category="retrieval")`. Retrieval operations start a DAG branch,
+accept no incoming graph data, and receive task-known queries, paths, and other
+configuration through `literal_arguments`; their return value produces the first
+data node in that branch.
+
 Import the module before calling `registered_operations()` in `main.py`, then pass the
 returned tuple as `registered_operations=REGISTERED_OPERATIONS`. Registered functions
 must be module-level, fully annotated, use no `*args`, `**kwargs`, or keyword-only

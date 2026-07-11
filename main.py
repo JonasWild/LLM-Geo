@@ -86,39 +86,39 @@ def _environment_log_level(name: str, default: int) -> int:
 
 TASK = "Finde die urbane Gebiete mittels overpass zwischen Magedburg und Hohes Holz und stelle sie als png dar."
 
-TASK = """
-```
-coords_latlon=[
-    (52.15995472769272, 11.175482626854976),
-    (52.12357669105406, 11.071887076720898),
-    (52.099033902796656, 11.234383588578686),
-    (52.093345131708986, 11.291868995068482),
-    (52.09865453410721, 11.259324112064796),
-    (52.09840031665556, 11.178141307841926),
-    (52.16989765458063, 11.240398225811637),
-    (52.09252130832008, 11.154333967570254),
-    (52.13788959193653, 11.091422237662943),
-    (52.141548691146795, 11.32608184518228),
-    (52.09563438305892, 11.293991719352936),
-    (52.10089941396949, 11.298974658146317),
-    (52.0935070621907, 11.139002406753155),
-    (52.15992543802094, 11.327600135322013),
-    (52.15837860999751, 11.168890129175152),
-    (52.118178728522054, 11.317112555354184),
-    (52.09587893233216, 11.27745661214289),
-    (52.07480910547546, 11.094384694737808),
-    (52.14833123951739, 11.127341727137027),
-    (52.1278198204315, 11.340525155358376),
-    (52.165742943249334, 11.304459361752187),
-    (52.15692596390275, 11.1628456676591),
-    (52.12028794270609, 11.008870428520757),
-    (52.097752824389396, 11.195809386685433),
-    (52.15072202658883, 11.325284574975335),
-],
-```
-Suche in gegebenem AOI nach Städten und urbanen Gebiete und stelle diese als neuen Layer “urbaneGebiete” auf dem SitaWare Plan “LayerTest” dar! Bleibe so minimal wie möglich: Query die urbanen Gebiete durch einen einzigen Call (als Task) in eine .geojson file und in einem zweiten task(write-oplan) schreibe diese .geojson file in den Plan! Mehr als zwei sequentielle Tasks dürfen nicht notwendig sein!!!
-
-"""
+# TASK = """
+# ```
+# coords_latlon=[
+#     (52.15995472769272, 11.175482626854976),
+#     (52.12357669105406, 11.071887076720898),
+#     (52.099033902796656, 11.234383588578686),
+#     (52.093345131708986, 11.291868995068482),
+#     (52.09865453410721, 11.259324112064796),
+#     (52.09840031665556, 11.178141307841926),
+#     (52.16989765458063, 11.240398225811637),
+#     (52.09252130832008, 11.154333967570254),
+#     (52.13788959193653, 11.091422237662943),
+#     (52.141548691146795, 11.32608184518228),
+#     (52.09563438305892, 11.293991719352936),
+#     (52.10089941396949, 11.298974658146317),
+#     (52.0935070621907, 11.139002406753155),
+#     (52.15992543802094, 11.327600135322013),
+#     (52.15837860999751, 11.168890129175152),
+#     (52.118178728522054, 11.317112555354184),
+#     (52.09587893233216, 11.27745661214289),
+#     (52.07480910547546, 11.094384694737808),
+#     (52.14833123951739, 11.127341727137027),
+#     (52.1278198204315, 11.340525155358376),
+#     (52.165742943249334, 11.304459361752187),
+#     (52.15692596390275, 11.1628456676591),
+#     (52.12028794270609, 11.008870428520757),
+#     (52.097752824389396, 11.195809386685433),
+#     (52.15072202658883, 11.325284574975335),
+# ],
+# ```
+# Suche in gegebenem AOI nach Städten und urbanen Gebiete und stelle diese als neuen Layer “urbaneGebiete” auf dem SitaWare Plan “LayerTest” dar! Bleibe so minimal wie möglich: Query die urbanen Gebiete durch einen einzigen Call (als Task) in eine .geojson file und in einem zweiten task(write-oplan) schreibe diese .geojson file in den Plan! Mehr als zwei sequentielle Tasks dürfen nicht notwendig sein!!!
+# 
+# """
 
 TASK_NAME = "llm_geo_task"
 # Import every operations module so its @code functions populate the registry.
@@ -185,22 +185,29 @@ def initialize_operation_retriever() -> OperationRetriever | None:
 
 
 def initialize_model():
+    environment = os.getenv("LLM_GEO_MODEL_ENVIRONMENT", "local").strip().lower()
+    if environment not in {"local", "openai"}:
+        raise ValueError("LLM_GEO_MODEL_ENVIRONMENT must be 'local' or 'openai'")
     model_name = os.getenv("LLM_GEO_MODEL", "gpt-5.4-mini").strip()
     if not model_name:
         raise RuntimeError("LLM_GEO_MODEL is empty")
     base_url = os.getenv("OPENAI_BASE_URL", "").strip()
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
 
-    model = ChatOpenAI(
-        base_url=base_url,
+    arguments = dict(
         api_key=api_key,
         model=model_name,
         temperature=0.3,
         timeout=720,
-        **{"extra_body": {"cache": {"no-cache": True}, "configurable": {"stream": False}}}
     )
+    if environment == "local":
+        arguments["base_url"] = base_url
+        arguments["extra_body"] = {
+            "cache": {"no-cache": True},
+            "configurable": {"stream": False},
+        }
 
-    return model
+    return ChatOpenAI(**arguments)
 
 
 def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
