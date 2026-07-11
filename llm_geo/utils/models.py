@@ -23,9 +23,10 @@ class PlanNode(BaseModel):
     kind: Literal["data", "operation"]
     description: str = Field(min_length=1)
     data_path: str = ""
-    implementation: Literal["generated", "registered"] = "generated"
+    implementation: Literal["generated", "registered"]
     registered_operation_id: str | None = None
     literal_arguments: dict[str, Any] = Field(default_factory=dict)
+    generation_reason: str | None = None
 
     @model_validator(mode="after")
     def validate_implementation_metadata(self) -> "PlanNode":
@@ -33,9 +34,19 @@ class PlanNode(BaseModel):
             self.implementation != "generated"
             or self.registered_operation_id
             or self.literal_arguments
+            or self.generation_reason
         ):
             raise ValueError(
                 "Data nodes cannot select an implementation or registered operation."
+            )
+        if self.kind == "operation" and self.implementation == "generated":
+            if not self.generation_reason or not self.generation_reason.strip():
+                raise ValueError(
+                    "Generated operations must explain why no registered operation applies."
+                )
+        if self.implementation == "registered" and self.generation_reason:
+            raise ValueError(
+                "Registered operations cannot include a generation reason."
             )
         return self
 

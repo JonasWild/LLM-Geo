@@ -75,7 +75,7 @@ class RegisteredOperationTests(unittest.TestCase):
         plan = WorkflowPlan(
             rationale="Use the trusted conversion function.",
             nodes=[
-                PlanNode(id="source", kind="data", description="Input", data_path="input.geojson"),
+                PlanNode(id="source", kind="data", description="Input", data_path="input.geojson", implementation="generated"),
                 PlanNode(
                     id="convert",
                     kind="operation",
@@ -83,7 +83,7 @@ class RegisteredOperationTests(unittest.TestCase):
                     implementation="registered",
                     registered_operation_id=operation.id,
                 ),
-                PlanNode(id="result", kind="data", description="Output"),
+                PlanNode(id="result", kind="data", description="Output", implementation="generated"),
             ],
             edges=[PlanEdge(source="source", target="convert"), PlanEdge(source="convert", target="result")],
         )
@@ -124,7 +124,7 @@ class RegisteredOperationTests(unittest.TestCase):
                     registered_operation_id=operation.id,
                     literal_arguments={"query": "parks"},
                 ),
-                PlanNode(id="features", kind="data", description="Retrieved data"),
+                PlanNode(id="features", kind="data", description="Retrieved data", implementation="generated"),
             ],
             edges=[PlanEdge(source="retrieve", target="features")],
         )
@@ -152,7 +152,7 @@ class RegisteredOperationTests(unittest.TestCase):
                     registered_operation_id=operation.id,
                     literal_arguments={"unexpected": True},
                 ),
-                PlanNode(id="features", kind="data", description="Retrieved data"),
+                PlanNode(id="features", kind="data", description="Retrieved data", implementation="generated"),
             ],
             edges=[PlanEdge(source="retrieve", target="features")],
         )
@@ -161,6 +161,30 @@ class RegisteredOperationTests(unittest.TestCase):
 
         self.assertTrue(any("unknown literal arguments" in issue for issue in issues))
         self.assertTrue(any("missing required arguments: query" in issue for issue in issues))
+
+    def test_operation_requires_explicit_implementation(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "implementation"):
+            PlanNode(id="transform", kind="operation", description="Transform data")
+
+    def test_generated_operation_requires_reason(self) -> None:
+        with self.assertRaisesRegex(
+            ValidationError, "why no registered operation applies"
+        ):
+            PlanNode(
+                id="transform",
+                kind="operation",
+                description="Transform data",
+                implementation="generated",
+            )
+
+        node = PlanNode(
+            id="transform",
+            kind="operation",
+            description="Transform data",
+            implementation="generated",
+            generation_reason="No registered operation performs this transformation.",
+        )
+        self.assertEqual(node.implementation, "generated")
 
 
 if __name__ == "__main__":
