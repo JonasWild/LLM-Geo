@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -63,6 +64,7 @@ from llm_geo.utils.models import (
     WorkflowStep,
 )
 from llm_geo.utils.prompts import GIS_RULES, save_prompt
+from llm_geo.utils.timing import time_node
 
 
 def create_llm_geo_graph(
@@ -128,13 +130,14 @@ def create_llm_geo_graph(
 
     def traced_node(name: str, node: Any) -> Any:
         """Record one checkpointed event around a top-level workflow node."""
+        timed_node = time_node(node)
 
         def invoke(state: LLMGeoState) -> dict[str, Any]:
             started_at = datetime.now(timezone.utc).isoformat()
             started = time.perf_counter()
             trace = state.get("execution_trace", [])
             try:
-                update = node(state)
+                update = asyncio.run(timed_node(state))
             except Exception as error:
                 event = execution_event(
                     trace,
@@ -186,9 +189,7 @@ def create_llm_geo_graph(
         )
         get_logger().info("Retriever prompt saved | path=%s", prompt_path)
         try:
-            decision, raw_results = ask_structured_with_tool_results(
-                retriever, prompt
-            )
+            decision, raw_results = ask_structured_with_tool_results(retriever, prompt)
             if not isinstance(decision, RetrievalDecision):
                 raise TypeError("Retriever returned an unexpected response type")
             retrieved = validate_provider_results(raw_results, data_directory)
@@ -398,9 +399,7 @@ def create_llm_geo_graph(
                 subject=operation_id,
                 prompt=reviewer_prompt,
             )
-            get_logger().info(
-                "Reviewer prompt saved | path=%s", reviewer_prompt_path
-            )
+            get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
             reviewed_code, review_issues = review_code(
                 reviewer, artifact.code, requirements, prompt=reviewer_prompt
             )

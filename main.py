@@ -14,7 +14,7 @@ load_dotenv(override=True)
 
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import BaseTool
-
+from langchain_openai import ChatOpenAI
 from llm_geo.middleware.logging import configure_logging, get_logger
 from llm_geo.operations import registered_operations
 from llm_geo.subagents.supervisor import create_geo_agent, run_geo_agent
@@ -138,16 +138,23 @@ LOG_LEVEL = _environment_log_level("LLM_GEO_LOG_LEVEL", logging.INFO)
 LOG_HTTP = _environment_bool("LLM_GEO_LOG_HTTP", True)
 
 
-def _initialize_model():
-    """Create the configured LangChain model, including compatible endpoints."""
-    options: dict[str, str | bool] = {}
-    if MODEL_PROVIDER:
-        options["model_provider"] = MODEL_PROVIDER
-    if BASE_URL:
-        options["base_url"] = BASE_URL
-        # Compatible servers commonly expose Chat Completions but not Responses.
-        options["use_responses_api"] = False
-    return init_chat_model(MODEL, **options)
+def initialize_model():
+    model_name = os.getenv("LLM_GEO_MODEL", "gpt-5.4-mini").strip()
+    if not model_name:
+        raise RuntimeError("LLM_GEO_MODEL is empty")
+    base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+
+    model = ChatOpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        model=model_name,
+        temperature=0.3,
+        timeout=720,
+        **{"extra_body": {"cache": {"no-cache": True}, "configurable": {"stream": False}}}
+    )
+
+    return model
 
 
 def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
@@ -165,7 +172,7 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
         MODEL_PROVIDER or "inferred",
         "custom" if BASE_URL else "provider-default",
     )
-    model = _initialize_model()
+    model = initialize_model()
     if USE_DEEP_AGENT:
         logger.info("Execution path | deep_agent=enabled")
         agent = create_geo_agent(

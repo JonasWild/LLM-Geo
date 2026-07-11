@@ -13,16 +13,15 @@ import sys
 import time
 from typing import Literal
 
+from main import initialize_model
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import load_dotenv
-from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from llm_geo.subagents.runtime import ask_structured, create_structured_agent
-
-
 STRATEGIES = ("auto", "tool", "provider", "json_mode", "prompted")
 
 
@@ -38,21 +37,6 @@ class ProbeResult(BaseModel):
 def structured_output_probe_value() -> int:
     """Return the integer required by the structured-output probe."""
     return 37
-
-
-def initialize_model():
-    model_name = os.getenv("LLM_GEO_MODEL", "gpt-5.4-mini").strip()
-    if not model_name:
-        raise RuntimeError("LLM_GEO_MODEL is empty")
-    provider = os.getenv("LLM_GEO_MODEL_PROVIDER", "openai").strip()
-    base_url = os.getenv("OPENAI_BASE_URL", "").strip()
-    options: dict[str, str | bool] = {}
-    if provider:
-        options["model_provider"] = provider
-    if base_url:
-        options["base_url"] = base_url
-        options["use_responses_api"] = False
-    return model_name, provider, base_url, init_chat_model(model_name, **options)
 
 
 def run_probe(model, strategy: str, with_tool: bool) -> tuple[bool, str, float]:
@@ -104,11 +88,8 @@ def main() -> int:
     if args.runs < 1:
         parser.error("--runs must be at least 1")
     load_dotenv()
-    model_name, provider, base_url, model = initialize_model()
+    model = initialize_model()
     strategies = tuple(args.strategy or STRATEGIES)
-    print(f"Model: {model_name}")
-    print(f"Provider: {provider or 'inferred'}")
-    print(f"Endpoint: {base_url or 'provider default'}")
     print(f"Runs per configuration: {args.runs}")
     print()
     total_failures = 0
@@ -167,9 +148,6 @@ def main() -> int:
         print()
     report = {
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "model": model_name,
-        "provider": provider or "inferred",
-        "endpoint": base_url or "provider default",
         "runs_per_configuration": args.runs,
         "configurations": configurations,
     }
