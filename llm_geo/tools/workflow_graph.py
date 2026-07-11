@@ -114,26 +114,7 @@ def validate_workflow_plan(
             )
             continue
         graph_input_ids = list(graph.predecessors(node.id))
-        if operation.category == "retrieval" and graph_input_ids:
-            issues.append(
-                f"Retrieval operation {node.id!r} must be a root operation with no "
-                f"graph inputs, but receives {graph_input_ids}. Supply its request "
-                "and configuration through literal_arguments."
-            )
-        if operation.category == "retrieval" and "output_path" in node.literal_arguments:
-            output_paths = [
-                node_map[output_id].data_path
-                for output_id in graph.successors(node.id)
-                if node_map[output_id].data_path
-            ]
-            expected_output_path = node.literal_arguments["output_path"]
-            if output_paths and output_paths != [expected_output_path]:
-                issues.append(
-                    f"Retrieval operation {node.id!r} writes {expected_output_path!r}, "
-                    f"but its output data node declares {output_paths}. Add any "
-                    "required conversion or rendering operation before a different "
-                    "output format."
-                )
+
         parameter_names = [name for name, _, _ in operation.inputs]
         literal_names = set(node.literal_arguments)
         unknown_literals = literal_names - set(parameter_names)

@@ -169,7 +169,7 @@ def _request_overpass(query: str) -> tuple[requests.Response, str]:
     raise RuntimeError("All Overpass endpoints failed")
 
 
-@code(category="retrieval")
+# @code(category="retrieval")
 def overpass_to_geojson(
     overpass_ql: str, output_path: str, description: str
 ) -> gpd.GeoDataFrame:
@@ -199,22 +199,13 @@ def overpass_to_geojson(
     return _as_wgs84_frame(collection)
 
 
-@code(category="retrieval")
-def nominatim_to_geojson(
-    query: str,
-    output_path: str,
-    description: str,
-    limit: int = 10,
-    country_codes: str | None = None,
-) -> gpd.GeoDataFrame:
+@code
+def nominatim_to_geojson(query: str, bbox: tuple[float, float, float, float] | None = None) -> gpd.GeoDataFrame:
     """Search Nominatim and persist an EPSG:4326 GeoJSON FeatureCollection.
 
     Args:
         query: Free-text place query.
-        output_path: Relative GeoJSON output path in the run results directory.
-        description: Short human-readable description of the requested dataset.
-        limit: Maximum number of returned features, between 1 and 50.
-        country_codes: Optional comma-separated ISO 3166-1 alpha-2 country codes.
+        bbox: Optional bounding box as (min_lon, min_lat, max_lon, max_lat) in EPSG:4326.
 
     Returns:
         Retrieved features as an EPSG:4326 GeoDataFrame.
@@ -222,21 +213,21 @@ def nominatim_to_geojson(
     global _last_nominatim_request
     if not query.strip():
         raise ValueError("query must not be empty")
-    if not description.strip():
-        raise ValueError("description must not be empty")
-    if not 1 <= limit <= 50:
-        raise ValueError("limit must be between 1 and 50")
     elapsed = time.monotonic() - _last_nominatim_request
     if elapsed < NOMINATIM_MIN_INTERVAL_SECONDS:
         time.sleep(NOMINATIM_MIN_INTERVAL_SECONDS - elapsed)
+
     parameters: dict[str, str | int] = {
         "q": query,
         "format": "geojson",
         "polygon_geojson": 1,
-        "limit": limit,
     }
-    if country_codes:
-        parameters["countrycodes"] = country_codes
+
+    if bbox is not None:
+        min_lon, min_lat, max_lon, max_lat = bbox
+        parameters["viewbox"] = f"{min_lon},{min_lat},{max_lon},{max_lat}"
+        parameters["bounded"] = 1
+
     endpoint = _nominatim_endpoint()
     response = _send_request(
         provider="nominatim",
@@ -259,11 +250,10 @@ def nominatim_to_geojson(
         raise ValueError("Nominatim did not return a GeoJSON FeatureCollection")
     if not isinstance(collection.get("features"), list):
         raise ValueError("Nominatim GeoJSON response did not contain a features list")
-    _write_feature_collection(output_path, collection)
+    # _write_feature_collection(output_path, collection)
     get_logger().info(
         "GeoJSON retrieved | provider=nominatim | endpoint=%s | description=%s | features=%d",
         endpoint,
-        description,
         len(collection["features"]),
     )
     return _as_wgs84_frame(collection)

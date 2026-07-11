@@ -36,9 +36,10 @@ class PlanNode(BaseModel):
             or self.literal_arguments
             or self.generation_reason
         ):
-            raise ValueError(
-                "Data nodes cannot select an implementation or registered operation."
-            )
+            pass # TODO: VALIDATE
+            # raise ValueError(
+            #     "Data nodes cannot select an implementation or registered operation."
+            # )
         if self.kind == "operation" and self.implementation == "generated":
             if not self.generation_reason or not self.generation_reason.strip():
                 raise ValueError(

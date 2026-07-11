@@ -21,7 +21,6 @@ class RegisteredOperation:
     defaults: dict[str, Any]
     output_type: str
     output_description: str
-    category: Literal["retrieval", "transformation"] = "transformation"
 
     @property
     def qualified_id(self) -> str:
@@ -36,8 +35,6 @@ class RegisteredOperation:
     def catalog_entry(self) -> dict[str, object]:
         return {
             "id": self.id,
-            "import": self.import_statement,
-            "category": self.category,
             "description": self.description,
             "inputs": [
                 {
@@ -65,22 +62,16 @@ def code(function: Callable[..., object]) -> Callable[..., object]: ...
 
 @overload
 def code(
-    function: None = None,
-    *,
-    category: Literal["retrieval", "transformation"] = "transformation",
+    function: None = None
 ) -> Callable[[Callable[..., object]], Callable[..., object]]: ...
 
 
 def code(
-    function: Callable[..., object] | None = None,
-    *,
-    category: Literal["retrieval", "transformation"] = "transformation",
+    function: Callable[..., object] | None = None
 ) -> Callable[..., object]:
     """Register one fully typed, documented, top-level trusted operation."""
     if function is None:
-        return lambda decorated: code(decorated, category=category)
-    if category not in {"retrieval", "transformation"}:
-        raise ValueError(f"Unsupported @code operation category: {category!r}")
+        return lambda decorated: code(decorated)
     if "<locals>" in function.__qualname__ or "." in function.__qualname__:
         raise TypeError("@code functions must be defined at module scope")
     signature = inspect.signature(function)
@@ -126,8 +117,7 @@ def code(
         inputs=tuple(inputs),
         defaults=defaults,
         output_type=_type_name(hints["return"]),
-        output_description=result,
-        category=category,
+        output_description=result
     )
     facade = sys.modules.get("llm_geo.ops")
     if facade is not None:
@@ -164,7 +154,7 @@ def _parse_docstring(documentation: str) -> tuple[str, dict[str, str], str]:
             continue
         name, separator, description = stripped.partition(":")
         if not separator or not name or not description.strip():
-            raise TypeError("Each Args entry must use 'name: description'")
+            raise TypeError(f"Each Args entry must use 'name: description': name: {name}, separator: {separator}, description: {description}")
         arguments[name.strip()] = description.strip()
     result = next(
         (line.strip() for line in lines[returns_index + 1 :] if line.strip()), ""
