@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from llm_geo.subagents.runtime import (
     JsonModeStructuredAgent,
+    PromptedStructuredAgent,
     ask_structured,
     create_structured_agent,
 )
@@ -37,6 +38,21 @@ class StructuredOutputTests(unittest.TestCase):
         model.bind.assert_called_once_with(
             response_format={"type": "json_object"}
         )
+
+    def test_prompted_mode_extracts_json_from_model_text(self) -> None:
+        model = MagicMock()
+        model.invoke.return_value = AIMessage(
+            content='Result follows:\n```json\n{"answer": "ok"}\n```'
+        )
+
+        with patch.dict(os.environ, {"LLM_GEO_STRUCTURED_OUTPUT": "prompted"}):
+            agent = create_structured_agent(model, "System", ExampleResult)
+            result = ask_structured(agent, "Question")
+
+        self.assertIsInstance(agent, PromptedStructuredAgent)
+        self.assertNotIsInstance(agent, JsonModeStructuredAgent)
+        self.assertEqual(result, ExampleResult(answer="ok"))
+        model.bind.assert_not_called()
 
     @patch("llm_geo.subagents.runtime.create_agent")
     def test_provider_strategy_is_explicit(self, create_agent: MagicMock) -> None:

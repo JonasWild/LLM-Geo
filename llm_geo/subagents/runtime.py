@@ -10,6 +10,7 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import (
     ProviderStrategy,
     StructuredOutputValidationError,
+    ToolStrategy,
 )
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -26,8 +27,8 @@ class StructuredAgent(Protocol):
     def invoke(self, request: dict[str, object]) -> dict[str, object]: ...
 
 
-class JsonModeStructuredAgent:
-    """Generate JSON through the provider API and validate it with Pydantic."""
+class PromptedStructuredAgent:
+    """Prompt for JSON text and validate it locally with Pydantic."""
 
     def __init__(
         self,
@@ -35,8 +36,14 @@ class JsonModeStructuredAgent:
         system_prompt: str,
         schema: type[BaseModel],
         tools: list[BaseTool],
+        *,
+        json_mode: bool = False,
     ) -> None:
-        self._model = model.bind(response_format={"type": "json_object"})
+        self._model = (
+            model.bind(response_format={"type": "json_object"})
+            if json_mode
+            else model
+        )
         self._system_prompt = system_prompt
         self._schema = schema
         self._tool_agent = (
@@ -82,7 +89,7 @@ class JsonModeStructuredAgent:
             )
             content = _message_text(response)
             try:
-                result = self._schema.model_validate_json(content)
+                result = self._schema.model_validate(_extract_json_object(content))
                 return {
                     "structured_response": result,
                     "messages": [*agent_messages, response],
@@ -98,6 +105,19 @@ class JsonModeStructuredAgent:
                     f"Validation error: {error}"
                 )
         raise RuntimeError("JSON-mode structured agent did not return a response")
+
+
+class JsonModeStructuredAgent(PromptedStructuredAgent):
+    """Use provider JSON mode, then validate the response locally."""
+
+    def __init__(
+        self,
+        model: BaseChatModel,
+        system_prompt: str,
+        schema: type[BaseModel],
+        tools: list[BaseTool],
+    ) -> None:
+        super().__init__(model, system_prompt, schema, tools, json_mode=True)
 
 
 def _last_user_content(messages: object) -> str:
@@ -120,11 +140,27 @@ def _message_text(message: AIMessage) -> str:
     )
 
 
+def _extract_json_object(content: str) -> dict[str, Any]:
+    """Extract the first valid JSON object, tolerating prose and Markdown fences."""
+    decoder = json.JSONDecoder()
+    for position, character in enumerate(content):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(content[position:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("Model response contained no valid JSON object")
+
+
 def _structured_output_strategy() -> str:
     strategy = os.getenv("LLM_GEO_STRUCTURED_OUTPUT", "auto").strip().lower()
-    if strategy not in {"auto", "provider", "json_mode"}:
+    if strategy not in {"auto", "tool", "provider", "json_mode", "prompted"}:
         raise ValueError(
-            "LLM_GEO_STRUCTURED_OUTPUT must be auto, provider, or json_mode"
+            "LLM_GEO_STRUCTURED_OUTPUT must be auto, tool, provider, json_mode, "
+            "or prompted"
         )
     return strategy
 
@@ -139,11 +175,19 @@ def create_structured_agent(
     selected_tools = tools or []
     if strategy == "json_mode":
         return JsonModeStructuredAgent(model, system_prompt, schema, selected_tools)
+    if strategy == "prompted":
+        return PromptedStructuredAgent(model, system_prompt, schema, selected_tools)
     return create_agent(
         model=model,
         tools=selected_tools,
         system_prompt=system_prompt,
-        response_format=(ProviderStrategy(schema) if strategy == "provider" else schema),
+        response_format=(
+            ProviderStrategy(schema)
+            if strategy == "provider"
+            else ToolStrategy(schema)
+            if strategy == "tool"
+            else schema
+        ),
     )
 
 
@@ -173,7 +217,7 @@ def ask_structured_with_tool_results(
 
 def _invoke_structured(agent: StructuredAgent, prompt: str) -> dict[str, object]:
     request = {"messages": [{"role": "user", "content": prompt}]}
-    if isinstance(agent, JsonModeStructuredAgent):
+    if isinstance(agent, PromptedStructuredAgent):
         return agent.invoke(request)
     for attempt in range(2):
         try:

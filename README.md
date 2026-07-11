@@ -178,10 +178,12 @@ synthetic structured-output tool, select application-side Pydantic parsing:
 LLM_GEO_STRUCTURED_OUTPUT=json_mode
 ```
 
-The supported values are `auto` (LangChain's default selection), `provider`
-(provider-native JSON Schema), and `json_mode` (`response_format=json_object` plus
-Pydantic validation). JSON mode runs retrieval tools first and parses their results in
-a separate model call.
+The supported values are `auto` (LangChain's default selection), `tool` (an explicit
+synthetic result tool), `provider` (provider-native JSON Schema), `json_mode`
+(`response_format=json_object` plus Pydantic validation), and `prompted` (schema
+instructions in the prompt plus manual JSON extraction and Pydantic validation).
+JSON and prompted modes run retrieval tools first and parse their results in a
+separate model call.
 
 The generator currently supports path, query, header, and JSON request inputs plus
 JSON `2xx` responses. Multipart bodies, binary responses, callbacks, and external
