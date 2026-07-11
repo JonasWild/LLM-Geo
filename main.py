@@ -15,8 +15,10 @@ load_dotenv(override=True)
 
 from langchain.chat_models import init_chat_model
 from langchain_openai import ChatOpenAI
+from langchain_openai import OpenAIEmbeddings
 from llm_geo.middleware.logging import configure_logging, get_logger
 from llm_geo.operations import load_all_operations
+from llm_geo.operations.retrieval import OperationRetriever
 from llm_geo.subagents.supervisor import create_geo_agent, run_geo_agent
 from llm_geo.system import run_llm_geo
 from llm_geo.tools.public_data_providers import PUBLIC_RETRIEVAL_OPERATIONS
@@ -146,6 +148,36 @@ LOG_LEVEL = _environment_log_level("LLM_GEO_LOG_LEVEL", logging.INFO)
 LOG_HTTP = _environment_bool("LLM_GEO_LOG_HTTP", True)
 GENERATE_MERMAID = _environment_bool("LLM_GEO_GENERATE_MERMAID", True)
 SLOW_STEP_SECONDS = _environment_positive_float("LLM_GEO_SLOW_STEP_SECONDS", 10.0)
+OPERATION_RETRIEVAL = _environment_bool("LLM_GEO_OPERATION_RETRIEVAL", True)
+OPERATION_RETRIEVAL_LIMIT = _environment_positive_int(
+    "LLM_GEO_OPERATION_RETRIEVAL_LIMIT", 50
+)
+
+
+def initialize_operation_retriever() -> OperationRetriever | None:
+    """Create the local index backed by an OpenAI-compatible embedding API."""
+    if not OPERATION_RETRIEVAL:
+        return None
+    model = os.getenv("LLM_GEO_EMBEDDING_MODEL", "text-embedding-3-small").strip()
+    if not model:
+        raise ValueError("LLM_GEO_EMBEDDING_MODEL must not be empty")
+    base_url = os.getenv("LLM_GEO_EMBEDDING_BASE_URL", "").strip()
+    api_key = os.getenv("LLM_GEO_EMBEDDING_API_KEY", "").strip() or os.getenv(
+        "OPENAI_API_KEY", ""
+    ).strip()
+    arguments = {"model": model, "api_key": api_key or None}
+    if base_url:
+        arguments["base_url"] = base_url
+    embeddings = OpenAIEmbeddings(**arguments)
+    identity = f"{model}|{base_url or 'openai-default'}"
+    index_dir = Path(
+        os.getenv("LLM_GEO_OPERATION_INDEX_DIR", ".llm_geo/operation_index")
+    )
+    return OperationRetriever(
+        embeddings,
+        index_dir,
+        embedding_identity=identity,
+    )
 
 
 def initialize_model():
@@ -183,11 +215,14 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
         "custom" if BASE_URL else "provider-default",
     )
     model = initialize_model()
+    operation_retriever = initialize_operation_retriever()
     if USE_DEEP_AGENT:
         logger.info("Execution path | deep_agent=enabled")
         agent = create_geo_agent(
             model,
             registered_operations=REGISTERED_OPERATIONS,
+            operation_retriever=operation_retriever,
+            operation_retrieval_limit=OPERATION_RETRIEVAL_LIMIT,
             default_task_name=task_name,
             output_root=OUTPUT_ROOT,
             allow_code_execution=ALLOW_CODE_EXECUTION,
@@ -206,6 +241,8 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
             task=task,
             task_name=task_name,
             registered_operations=REGISTERED_OPERATIONS,
+            operation_retriever=operation_retriever,
+            operation_retrieval_limit=OPERATION_RETRIEVAL_LIMIT,
             output_root=OUTPUT_ROOT,
             allow_code_execution=ALLOW_CODE_EXECUTION,
             max_plan_attempts=MAX_PLAN_ATTEMPTS,

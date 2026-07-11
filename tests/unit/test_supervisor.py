@@ -90,6 +90,8 @@ class SupervisorTests(unittest.TestCase):
             "Map the parks",
             "configured_name",
             registered_operations=registered_operations,
+            operation_retriever=None,
+            operation_retrieval_limit=50,
             output_root=Path("custom-output"),
             allow_code_execution=False,
             max_plan_attempts=4,
@@ -106,6 +108,7 @@ class SupervisorTests(unittest.TestCase):
     @patch.object(main_module, "configure_logging")
     @patch.object(main_module, "get_logger")
     @patch.object(main_module, "initialize_model")
+    @patch.object(main_module, "initialize_operation_retriever")
     @patch.object(main_module, "run_geo_agent")
     @patch.object(main_module, "create_geo_agent")
     @patch.object(main_module, "run_llm_geo")
@@ -114,6 +117,7 @@ class SupervisorTests(unittest.TestCase):
         run_workflow: Mock,
         create_agent: Mock,
         run_agent: Mock,
+        initialize_retriever: Mock,
         initialize_model: Mock,
         get_logger: Mock,
         configure_logging: Mock,
@@ -121,6 +125,8 @@ class SupervisorTests(unittest.TestCase):
         model = object()
         compiled_agent = object()
         initialize_model.return_value = model
+        retriever = object()
+        initialize_retriever.return_value = retriever
         create_agent.return_value = compiled_agent
         run_agent.return_value = {
             "status": "complete",
@@ -135,6 +141,8 @@ class SupervisorTests(unittest.TestCase):
         create_agent.assert_called_once_with(
             model,
             registered_operations=main_module.REGISTERED_OPERATIONS,
+            operation_retriever=retriever,
+            operation_retrieval_limit=main_module.OPERATION_RETRIEVAL_LIMIT,
             default_task_name="parks",
             output_root=main_module.OUTPUT_ROOT,
             allow_code_execution=main_module.ALLOW_CODE_EXECUTION,

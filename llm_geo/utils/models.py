@@ -89,6 +89,7 @@ class LLMGeoState(TypedDict, total=False):
     execution_attempts: int
     plan: dict[str, Any]
     plan_issues: list[str]
+    retrieved_operation_ids: list[str]
     operations: list[dict[str, Any]]
     assembled_code: str
     execution: dict[str, Any]

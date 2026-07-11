@@ -27,6 +27,7 @@ from llm_geo.middleware.logging import (
     get_logger,
 )
 from llm_geo.operations.registry import RegisteredOperation
+from llm_geo.operations.retrieval import OperationRetriever
 from llm_geo.subagents.runtime import (
     ask_structured,
     build_review_prompt,
@@ -97,6 +98,8 @@ def create_llm_geo_graph(
     model: BaseChatModel,
     checkpointer: Any | None = None,
     registered_operations: Sequence[RegisteredOperation] = (),
+    operation_retriever: OperationRetriever | None = None,
+    operation_retrieval_limit: int = 50,
     generate_mermaid: bool = True,
     slow_step_seconds: float = 10.0,
 ) -> CompiledStateGraph:
@@ -203,10 +206,39 @@ def create_llm_geo_graph(
             attempt,
             state.get("max_plan_attempts", 3),
         )
+        selected_ids = state.get("retrieved_operation_ids", [])
+        if selected_ids:
+            planner_operations = tuple(
+                trusted_by_id[operation_id]
+                for operation_id in selected_ids
+                if operation_id in trusted_by_id
+            )
+        elif operation_retriever is not None:
+            try:
+                planner_operations = operation_retriever.select(
+                    state["task"], trusted_operations, operation_retrieval_limit
+                )
+                selected_ids = [operation.id for operation in planner_operations]
+                get_logger().info(
+                    "Operation retrieval complete | selected=%d/%d",
+                    len(planner_operations),
+                    len(trusted_operations),
+                )
+            except Exception as error:
+                planner_operations = trusted_operations
+                selected_ids = [operation.id for operation in planner_operations]
+                get_logger().warning(
+                    "Operation retrieval failed; using full catalog | type=%s | reason=%s",
+                    type(error).__name__,
+                    error,
+                )
+        else:
+            planner_operations = trusted_operations
+            selected_ids = [operation.id for operation in planner_operations]
         prompt = (
             f"TASK:\n{state['task']}\n\nPREVIOUS PLAN ISSUES TO CORRECT:\n"
             f"{to_toon(state.get('plan_issues', []))}\n\nREGISTERED OPERATIONS:\n"
-            f"{to_toon([operation.catalog_entry() for operation in trusted_operations])}\n\n"
+            f"{to_toon([operation.catalog_entry() for operation in planner_operations])}\n\n"
             "Return one DAG containing retrieval, transformation, and output. Each "
             "edge must alternate data and operation. Retrieval must use matching "
             "registered operations; their outputs are EPSG:4326 GeoDataFrames also "
@@ -236,6 +268,7 @@ def create_llm_geo_graph(
             raise TypeError("Planner returned an unexpected response type")
         return {
             "plan": result.model_dump(mode="json"),
+            "retrieved_operation_ids": selected_ids,
             "plan_attempts": attempt,
             "artifacts": state.get("artifacts", []) + [str(prompt_path)],
             "status": "plan_created",
@@ -734,6 +767,8 @@ def run_llm_geo(
     task_name: str,
     *,
     registered_operations: Sequence[RegisteredOperation] = (),
+    operation_retriever: OperationRetriever | None = None,
+    operation_retrieval_limit: int = 50,
     output_root: str | Path = "output",
     allow_code_execution: bool = True,
     max_plan_attempts: int = 3,
@@ -774,6 +809,8 @@ def run_llm_geo(
             model,
             checkpointer=SqliteSaver(connection),
             registered_operations=registered_operations,
+            operation_retriever=operation_retriever,
+            operation_retrieval_limit=operation_retrieval_limit,
             generate_mermaid=generate_mermaid,
             slow_step_seconds=slow_step_seconds,
         )
@@ -791,6 +828,7 @@ def run_llm_geo(
         "plan_attempts": 0,
         "execution_attempts": 0,
         "operations": [],
+        "retrieved_operation_ids": [],
         "artifacts": system_artifacts,
         "execution_trace": [],
         "status": "started",
@@ -813,6 +851,8 @@ def resume_llm_geo(
     run_dir: str | Path,
     *,
     registered_operations: Sequence[RegisteredOperation] = (),
+    operation_retriever: OperationRetriever | None = None,
+    operation_retrieval_limit: int = 50,
     log_level: int = logging.INFO,
     log_http: bool = True,
     generate_mermaid: bool = True,
@@ -841,6 +881,8 @@ def resume_llm_geo(
             model,
             checkpointer=SqliteSaver(connection),
             registered_operations=registered_operations,
+            operation_retriever=operation_retriever,
+            operation_retrieval_limit=operation_retrieval_limit,
             generate_mermaid=generate_mermaid,
             slow_step_seconds=slow_step_seconds,
         )

@@ -81,6 +81,26 @@ class EnvironmentConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "LLM_GEO_MODEL is empty"):
                 main_module.initialize_model()
 
+    @patch.object(main_module, "OpenAIEmbeddings")
+    def test_embedding_initializer_uses_provider_default_without_base_url(
+        self, embeddings: Mock
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_GEO_EMBEDDING_MODEL": "embedding-model",
+                "LLM_GEO_EMBEDDING_BASE_URL": "",
+                "LLM_GEO_EMBEDDING_API_KEY": "embedding-key",
+            },
+            clear=False,
+        ):
+            retriever = main_module.initialize_operation_retriever()
+
+        embeddings.assert_called_once_with(
+            model="embedding-model", api_key="embedding-key"
+        )
+        self.assertIsNotNone(retriever)
+
 
 if __name__ == "__main__":
     unittest.main()

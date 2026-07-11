@@ -15,6 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
 from llm_geo.operations.registry import RegisteredOperation
+from llm_geo.operations.retrieval import OperationRetriever
 from llm_geo.system import run_llm_geo
 from llm_geo.tools.data_inspection import from_toon, to_toon
 
@@ -22,6 +23,8 @@ from llm_geo.tools.data_inspection import from_toon, to_toon
 def create_geo_agent(
     model: BaseChatModel,
     registered_operations: Sequence[RegisteredOperation] = (),
+    operation_retriever: OperationRetriever | None = None,
+    operation_retrieval_limit: int = 50,
     *,
     default_task_name: str | None = None,
     output_root: str | Path = "output",
@@ -48,6 +51,8 @@ def create_geo_agent(
             task,
             selected_task_name,
             registered_operations=registered_operations,
+            operation_retriever=operation_retriever,
+            operation_retrieval_limit=operation_retrieval_limit,
             output_root=output_root,
             allow_code_execution=allow_code_execution,
             max_plan_attempts=max_plan_attempts,

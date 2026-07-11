@@ -1,5 +1,6 @@
 .venv/
 __pycache__/
+.llm_geo/
 *.py[cod]
 .env
 .idea/

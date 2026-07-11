@@ -100,6 +100,29 @@ decorate it with zero-argument `@code`. The qualified function name is its regis
 parameter annotations, return annotation, and the docstring become its capability
 contract.
 
+When more operations are registered than `LLM_GEO_OPERATION_RETRIEVAL_LIMIT`, the
+planner catalog is selected from complete operation docstrings using local hybrid
+FAISS and lexical retrieval. The full trusted registry remains available to DAG
+validation and execution. Embeddings use OpenAI by default:
+
+```dotenv
+LLM_GEO_OPERATION_RETRIEVAL=true
+LLM_GEO_OPERATION_RETRIEVAL_LIMIT=50
+LLM_GEO_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+For a locally deployed OpenAI-compatible embeddings endpoint, configure only its
+embedding URL and model (plus a placeholder key if the server requires one):
+
+```dotenv
+LLM_GEO_EMBEDDING_MODEL=bge-m3
+LLM_GEO_EMBEDDING_BASE_URL=http://localhost:8000/v1
+LLM_GEO_EMBEDDING_API_KEY=not-needed
+```
+
+The FAISS index is cached under `.llm_geo/operation_index` and rebuilt when an
+operation docstring, operation ID, embedding model, or embedding endpoint changes.
+
 ```python
 import geopandas as gpd
 
