@@ -487,8 +487,10 @@ The result-manifest operation is always required and is never considered unused.
             requirements = (
                 f"TASK:\n{state['task']}\n\nLOCAL WORKFLOW CONTEXT:\n"
                 f"{to_toon(context)}\n\nThe returned code must start "
-                f"with `{contract['signature']}` and end by returning exactly "
-                f"{contract['outputs']}. Literal parameters and their runtime values "
+                f"with `{contract['signature']}`. Its final top-level executable "
+                f"statement must be exactly `{contract['return_statement']}`; do not "
+                "nest this return in a control-flow block or add executable statements "
+                "after it. Literal parameters and their runtime values "
                 f"are {contract['literal_arguments']!r}; use the parameters in the "
                 "implementation rather than hard-coding those values. Do not call "
                 "the function."
@@ -510,45 +512,62 @@ The result-manifest operation is always required and is never considered unused.
             implementation_issues = validate_operation_code(
                 artifact.code, contract, generated=True
             )
-            review_requirements = requirements
+            reviewed_code = artifact.code
+            review_issues: list[str] = []
             if implementation_issues:
-                review_requirements += (
-                    "\n\nDETERMINISTIC IMPLEMENTATION ISSUES TO CORRECT:\n"
+                review_requirements = (
+                    requirements
+                    + "\n\nDETERMINISTIC IMPLEMENTATION ISSUES TO CORRECT:\n"
                     + to_toon(implementation_issues)
                 )
-            reviewer_prompt = build_review_prompt(
-                artifact.code, review_requirements
-            )
-            reviewer_prompt_path = save_prompt(
-                state["save_dir"],
-                stage="ops",
-                agent="reviewer",
-                subject=operation_id,
-                prompt=reviewer_prompt,
-            )
-            get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
-            with timed_step(
-                "reviewer.call", slow_step_seconds, operation=operation_id
-            ):
-                reviewed_code, review_issues = review_code(
-                    reviewer,
-                    artifact.code,
-                    review_requirements,
+                reviewer_prompt = build_review_prompt(
+                    artifact.code, review_requirements
+                )
+                reviewer_prompt_path = save_prompt(
+                    state["save_dir"],
+                    stage="ops",
+                    agent="reviewer",
+                    subject=operation_id,
                     prompt=reviewer_prompt,
                 )
-            remaining_issues = validate_operation_code(
-                reviewed_code, contract, generated=True
-            )
-            if remaining_issues:
-                raise RuntimeError(
-                    f"Reviewed operation {operation_id!r} violates its executable "
-                    f"contract: {'; '.join(remaining_issues)}"
+                get_logger().info(
+                    "Reviewer prompt saved | path=%s", reviewer_prompt_path
                 )
-            get_logger().info(
-                "Operation reviewed | node=%s | issues=%d",
-                operation_id,
-                len(review_issues),
-            )
+                with timed_step(
+                    "reviewer.call", slow_step_seconds, operation=operation_id
+                ):
+                    reviewed_code, review_issues = review_code(
+                        reviewer,
+                        artifact.code,
+                        review_requirements,
+                        prompt=reviewer_prompt,
+                    )
+                remaining_issues = validate_operation_code(
+                    reviewed_code, contract, generated=True
+                )
+                if remaining_issues:
+                    failed_review_path = (
+                        Path(state["save_dir"])
+                        / "code"
+                        / "failed_reviews"
+                        / f"{operation_id}.py"
+                    )
+                    failed_review_path.parent.mkdir(parents=True, exist_ok=True)
+                    failed_review_path.write_text(reviewed_code, encoding="utf-8")
+                    raise RuntimeError(
+                        f"Reviewed operation {operation_id!r} violates its executable "
+                        f"contract: {'; '.join(remaining_issues)}. Invalid review "
+                        f"saved to {failed_review_path}"
+                    )
+                get_logger().info(
+                    "Operation reviewed | node=%s | issues=%d",
+                    operation_id,
+                    len(review_issues),
+                )
+            else:
+                get_logger().info(
+                    "Operation passed deterministic validation | node=%s", operation_id
+                )
             step = WorkflowStep(
                 node_id=operation_id,
                 description=contract["description"],

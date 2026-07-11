@@ -21,7 +21,6 @@ from llm_geo.operations import load_all_operations
 from llm_geo.operations.retrieval import OperationRetriever
 from llm_geo.subagents.supervisor import create_geo_agent, run_geo_agent
 from llm_geo.system import run_llm_geo
-from llm_geo.tools.public_data_providers import PUBLIC_RETRIEVAL_OPERATIONS
 
 if sys.platform == 'win32':
     import pip_system_certs.wrapt_requests

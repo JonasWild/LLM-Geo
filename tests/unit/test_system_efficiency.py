@@ -225,6 +225,24 @@ class DeterministicDagTests(unittest.TestCase):
         self.assertTrue(any("parameters must be exactly" in issue for issue in issues))
         self.assertTrue(any("output variables exactly" in issue for issue in issues))
 
+    def test_operation_return_must_be_the_final_top_level_statement(self) -> None:
+        contract = {
+            "node_id": "write_result_manifest",
+            "inputs": ["urban_png"],
+            "literal_arguments": {},
+            "outputs": ["llm_geo_result"],
+        }
+        nested_return = (
+            "def write_result_manifest(urban_png):\n"
+            "    llm_geo_result = {'artifact': urban_png}\n"
+            "    if urban_png:\n"
+            "        return llm_geo_result\n"
+        )
+
+        issues = validate_operation_code(nested_return, contract)
+
+        self.assertTrue(any("output variables exactly" in issue for issue in issues))
+
 
 if __name__ == "__main__":
     unittest.main()

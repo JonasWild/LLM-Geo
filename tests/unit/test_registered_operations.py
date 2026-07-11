@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -43,6 +46,22 @@ def retrieve_fixture(query: str, limit: int = 10) -> str:
 
 
 class RegisteredOperationTests(unittest.TestCase):
+    def test_public_provider_operations_import_in_a_clean_process(self) -> None:
+        project_root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from llm_geo.ops import nominatim_to_geojson, overpass_to_geojson",
+            ],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_decorator_derives_catalog_from_types_and_docstring(self) -> None:
         operation = next(
             item for item in registered_operations() if item.name == "integer_to_text"
