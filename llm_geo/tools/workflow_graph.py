@@ -13,6 +13,17 @@ if TYPE_CHECKING:
     from llm_geo.operations.registry import RegisteredOperation
 
 
+def _operation_registry(
+    operations: Sequence["RegisteredOperation"],
+) -> dict[str, "RegisteredOperation"]:
+    """Index operations by canonical short ID and legacy qualified ID."""
+    return {
+        alias: operation
+        for operation in operations
+        for alias in (operation.id, operation.qualified_id)
+    }
+
+
 def validate_workflow_plan(
     plan: WorkflowPlan,
     sources: list[DataSource],
@@ -91,7 +102,7 @@ def validate_workflow_plan(
     for source in sources:
         if source.location not in planned_paths:
             issues.append(f"Provided data source is absent from the plan: {source.location}")
-    registry = {operation.id: operation for operation in registered_operations}
+    registry = _operation_registry(registered_operations)
     for node in plan.nodes:
         if node.implementation != "registered" or not node.registered_operation_id:
             continue
@@ -323,7 +334,7 @@ def registered_operation_bridge(
         call_arguments.append(f"{parameter_name}={graph_argument}")
     arguments = ", ".join(contract["inputs"])
     return (
-        f"from {operation.module} import {operation.name}\n\n"
+        f"{operation.import_statement}\n\n"
         f"def {operation_id}({arguments}):\n"
         f"    return {operation.name}({', '.join(call_arguments)})"
     )

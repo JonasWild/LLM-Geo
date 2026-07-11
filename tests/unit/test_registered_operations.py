@@ -48,7 +48,15 @@ class RegisteredOperationTests(unittest.TestCase):
             item for item in registered_operations() if item.name == "integer_to_text"
         )
 
-        self.assertEqual(operation.id, f"{__name__}.integer_to_text")
+        self.assertEqual(operation.id, "integer_to_text")
+        self.assertEqual(operation.qualified_id, f"{__name__}.integer_to_text")
+        self.assertEqual(
+            operation.catalog_entry()["import"],
+            "from llm_geo.ops import integer_to_text",
+        )
+        from llm_geo.ops import integer_to_text as public_integer_to_text
+
+        self.assertIs(public_integer_to_text, integer_to_text)
         self.assertEqual(operation.inputs, (("value", "int", "Integer to convert."),))
         self.assertEqual(operation.output_type, "str")
         self.assertEqual(operation.output_description, "Text representation of the integer.")
@@ -140,9 +148,12 @@ class RegisteredOperationTests(unittest.TestCase):
         )
 
         self.assertEqual(validate_workflow_plan(plan, [], [operation]), [])
+        legacy_plan = plan.model_copy(deep=True)
+        legacy_plan.nodes[0].registered_operation_id = operation.qualified_id
+        self.assertEqual(validate_workflow_plan(legacy_plan, [], [operation]), [])
         self.assertEqual(
             registered_operation_bridge(plan, "retrieve", operation),
-            f"from {__name__} import retrieve_fixture\n\n"
+            "from llm_geo.ops import retrieve_fixture\n\n"
             "def retrieve():\n"
             "    return retrieve_fixture(query='parks')",
         )

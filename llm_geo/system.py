@@ -159,7 +159,11 @@ def create_llm_geo_graph(
 ) -> CompiledStateGraph:
     """Create the complete, staged LLM-GEO production graph."""
     trusted_operations = tuple(registered_operations)
-    trusted_by_id = {operation.id: operation for operation in trusted_operations}
+    trusted_by_id = {
+        alias: operation
+        for operation in trusted_operations
+        for alias in (operation.id, operation.qualified_id)
+    }
     planner = create_structured_agent(
         model,
         "You are the LLM-GEO workflow planner. Produce one concise alternating "
@@ -182,7 +186,9 @@ def create_llm_geo_graph(
     assembler = create_structured_agent(
         model,
         "You write only imports and orchestration glue for already-reviewed GIS "
-        "functions. Never reproduce their implementations. " + GIS_RULES,
+        "functions. Keep every workflow call explicit inside a main() function so "
+        "the planned DAG remains visible. Never reproduce operation implementations. "
+        + GIS_RULES,
         AssemblyArtifact,
     )
     debugger = create_structured_agent(
@@ -309,9 +315,10 @@ def create_llm_geo_graph(
             "satisfy the step.\n"
             "- Every generated operation must provide generation_reason explaining "
             "why none of the registered operations apply.\n"
-            "- Copy registered_operation_id exactly from the catalog.\n\n"
-            "REGISTERED OPERATIONS:\n"
-            f"{to_toon([operation.catalog_entry() for operation in planner_operations])}\n\n"
+            "- Select operations by their short function ID exactly as shown in the "
+            "catalog; never invent or copy module paths.\n\n"
+            "TOP REGISTERED RELEVANT OPERATIONS:\n"
+            f"{to_toon([operation.catalog_entry() for idx, operation in enumerate(planner_operations)])}\n\n"
             f"TASK:\n{state['task']}\n\n"
             f"{previous_plan_section}PREVIOUS PLAN ISSUES TO CORRECT:\n"
             f"{to_toon(state.get('plan_issues', []))}\n\n"
@@ -527,11 +534,16 @@ def create_llm_geo_graph(
         {to_toon(interfaces)}
 
         Return only additional imports and orchestration_code. The orchestration code
-        must define assemble_solution(), call the reviewed functions in dependency
-        order, pass every interface's literal_arguments as keyword arguments using
-        exactly the supplied values, and call assemble_solution() at the end. Do not reproduce any reviewed
-        function. Print important results. Save requested maps/charts and write
-        llm_geo_result.json in the current working directory, which is the run's
+        must define main() and call main() at the end. Inside main(), emit one explicit
+        function call per reviewed operation in dependency order. Bind each returned
+        value to its output data-node name and pass input data-node variables as
+        arguments. Before each call, add a short comment showing
+        `input data -> operation -> output data`. Keep workflow calls directly inside
+        main(): do not hide them in loops, comprehensions, nested functions, dispatch
+        dictionaries, or generic executors. Pass every interface's literal_arguments
+        as keyword arguments using exactly the supplied values. Do not reproduce any
+        reviewed function. Print important results. Save requested maps/charts and
+        write llm_geo_result.json in the current working directory, which is the run's
         results directory. Do not use an if __name__ guard.
         """
         requirements = textwrap.dedent(requirements)

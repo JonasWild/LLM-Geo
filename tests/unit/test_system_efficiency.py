@@ -26,7 +26,7 @@ class ProgramCompositionTests(unittest.TestCase):
         program = compose_program(
             "import json",
             [function],
-            "def assemble_solution():\n    return transform({})\n\nassemble_solution()",
+            "def main():\n    return transform({})\n\nmain()",
         )
 
         self.assertIn(function, program)

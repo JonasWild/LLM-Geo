@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, get_type_hints, overload
 
@@ -22,9 +23,20 @@ class RegisteredOperation:
     output_description: str
     category: Literal["retrieval", "transformation"] = "transformation"
 
+    @property
+    def qualified_id(self) -> str:
+        """Return the legacy source-qualified operation identifier."""
+        return f"{self.module}.{self.name}"
+
+    @property
+    def import_statement(self) -> str:
+        """Return the stable public import exposed to generated programs."""
+        return f"from llm_geo.ops import {self.name}"
+
     def catalog_entry(self) -> dict[str, object]:
         return {
             "id": self.id,
+            "import": self.import_statement,
             "category": self.category,
             "description": self.description,
             "inputs": [
@@ -96,9 +108,15 @@ def code(
         )
         if parameter.default is not inspect.Signature.empty:
             defaults[parameter.name] = parameter.default
-    operation_id = f"{function.__module__}.{function.__qualname__}"
+    operation_id = function.__name__
     if operation_id in _OPERATIONS:
-        raise ValueError(f"Duplicate @code operation ID: {operation_id}")
+        existing = _OPERATIONS[operation_id]
+        raise ValueError(
+            f"Duplicate @code function name {operation_id!r}: "
+            f"{existing.qualified_id!r} and "
+            f"{f'{function.__module__}.{function.__qualname__}'!r}. "
+            "@code function names must be globally unique."
+        )
     _OPERATIONS[operation_id] = RegisteredOperation(
         id=operation_id,
         function=function,
@@ -111,7 +129,15 @@ def code(
         output_description=result,
         category=category,
     )
+    facade = sys.modules.get("llm_geo.ops")
+    if facade is not None:
+        setattr(facade, function.__name__, function)
     return function
+
+
+def operation_aliases(operation: RegisteredOperation) -> tuple[str, ...]:
+    """Return canonical and legacy identifiers accepted at system boundaries."""
+    return operation.id, operation.qualified_id
 
 
 def registered_operations() -> tuple[RegisteredOperation, ...]:

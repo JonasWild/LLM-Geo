@@ -40,7 +40,7 @@ def operation(name: str, docstring: str) -> RegisteredOperation:
     function.__name__ = name
     function.__doc__ = docstring
     return RegisteredOperation(
-        id=f"example.{name}",
+        id=name,
         function=function,
         module="example",
         name=name,
@@ -75,7 +75,7 @@ class OperationRetrieverTests(unittest.TestCase):
                 operation("identity", "Return input unchanged."),
             )
             selected = retriever.select("find urban areas", operations, limit=1)
-        self.assertEqual([item.id for item in selected], ["example.cities"])
+        self.assertEqual([item.id for item in selected], ["cities"])
 
     def test_unchanged_catalog_reuses_faiss_index(self) -> None:
         embeddings = FakeEmbeddings()
