@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import main as main_module
 
@@ -37,32 +37,36 @@ class EnvironmentConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SETTING"):
                 main_module._environment_log_level("SETTING", logging.INFO)
 
-    def test_model_initializer_passes_provider_and_custom_base_url(self) -> None:
-        with (
-            patch.object(main_module, "MODEL", "local-model"),
-            patch.object(main_module, "MODEL_PROVIDER", "openai"),
-            patch.object(main_module, "BASE_URL", "http://localhost:1234/v1"),
-            patch.object(main_module, "init_chat_model") as init_model,
+    @patch.object(main_module, "ChatOpenAI")
+    def test_model_initializer_passes_model_and_custom_base_url(
+        self, chat_model: Mock
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_GEO_MODEL": "local-model",
+                "OPENAI_BASE_URL": "http://localhost:1234/v1",
+                "OPENAI_API_KEY": "secret",
+            },
         ):
-            main_module._initialize_model()
+            main_module.initialize_model()
 
-        init_model.assert_called_once_with(
-            "local-model",
-            model_provider="openai",
+        chat_model.assert_called_once_with(
             base_url="http://localhost:1234/v1",
-            use_responses_api=False,
+            api_key="secret",
+            model="local-model",
+            temperature=0.3,
+            timeout=720,
+            extra_body={
+                "cache": {"no-cache": True},
+                "configurable": {"stream": False},
+            },
         )
 
-    def test_model_initializer_omits_empty_optional_settings(self) -> None:
-        with (
-            patch.object(main_module, "MODEL", "openai:gpt-4o"),
-            patch.object(main_module, "MODEL_PROVIDER", None),
-            patch.object(main_module, "BASE_URL", None),
-            patch.object(main_module, "init_chat_model") as init_model,
-        ):
-            main_module._initialize_model()
-
-        init_model.assert_called_once_with("openai:gpt-4o")
+    def test_model_initializer_rejects_empty_model(self) -> None:
+        with patch.dict(os.environ, {"LLM_GEO_MODEL": ""}):
+            with self.assertRaisesRegex(RuntimeError, "LLM_GEO_MODEL is empty"):
+                main_module.initialize_model()
 
 
 if __name__ == "__main__":

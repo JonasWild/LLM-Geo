@@ -136,6 +136,7 @@ MAX_EXECUTION_ATTEMPTS = _environment_positive_int("LLM_GEO_MAX_EXECUTION_ATTEMP
 # INFO: concise progress. DEBUG: additional file detail.
 LOG_LEVEL = _environment_log_level("LLM_GEO_LOG_LEVEL", logging.INFO)
 LOG_HTTP = _environment_bool("LLM_GEO_LOG_HTTP", True)
+GENERATE_MERMAID = _environment_bool("LLM_GEO_GENERATE_MERMAID", True)
 
 
 def initialize_model():
@@ -187,6 +188,7 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
             max_execution_attempts=MAX_EXECUTION_ATTEMPTS,
             log_level=LOG_LEVEL,
             log_http=LOG_HTTP,
+            generate_mermaid=GENERATE_MERMAID,
         )
         result = run_geo_agent(agent, task, task_name)
     else:
@@ -204,6 +206,7 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
             max_execution_attempts=MAX_EXECUTION_ATTEMPTS,
             log_level=LOG_LEVEL,
             log_http=LOG_HTTP,
+            generate_mermaid=GENERATE_MERMAID,
         )
     logger.info(
         "Run finished | status=%s | output=%s",

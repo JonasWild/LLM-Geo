@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -64,7 +63,6 @@ from llm_geo.utils.models import (
     WorkflowStep,
 )
 from llm_geo.utils.prompts import GIS_RULES, save_prompt
-from llm_geo.utils.timing import time_node
 
 
 def create_llm_geo_graph(
@@ -72,6 +70,7 @@ def create_llm_geo_graph(
     checkpointer: Any | None = None,
     retrieval_tools: Sequence[BaseTool] = (),
     registered_operations: Sequence[RegisteredOperation] = (),
+    generate_mermaid: bool = True,
 ) -> CompiledStateGraph:
     """Create the complete, staged LLM-GEO production graph."""
     provider_tools = list(retrieval_tools)
@@ -129,34 +128,53 @@ def create_llm_geo_graph(
     )
 
     def traced_node(name: str, node: Any) -> Any:
-        """Record one checkpointed event around a top-level workflow node."""
-        timed_node = time_node(node)
+        """Log, time, and checkpoint one top-level workflow node."""
 
         def invoke(state: LLMGeoState) -> dict[str, Any]:
             started_at = datetime.now(timezone.utc).isoformat()
             started = time.perf_counter()
             trace = state.get("execution_trace", [])
+            occurrence = sum(event.get("node") == name for event in trace) + 1
+            logger = get_logger()
+            logger.info("Node start | node=%s | occurrence=%d", name, occurrence)
             try:
-                update = asyncio.run(timed_node(state))
+                update = node(state)
             except Exception as error:
+                duration = time.perf_counter() - started
                 event = execution_event(
                     trace,
                     name,
                     "exception",
                     started_at=started_at,
-                    duration_seconds=time.perf_counter() - started,
+                    duration_seconds=duration,
                     exception_type=type(error).__name__,
                 )
-                write_execution_graph_artifacts(
-                    [*trace, event], Path(state["save_dir"])
+                logger.exception(
+                    "Node failed | node=%s | type=%s | duration=%.3fs | reason=%s",
+                    name,
+                    type(error).__name__,
+                    duration,
+                    error,
                 )
+                if generate_mermaid:
+                    write_execution_graph_artifacts(
+                        [*trace, event], Path(state["save_dir"])
+                    )
                 raise
+            duration = time.perf_counter() - started
+            status = str(update.get("status", state.get("status", "unknown")))
             event = execution_event(
                 trace,
                 name,
-                str(update.get("status", state.get("status", "unknown"))),
+                status,
                 started_at=started_at,
-                duration_seconds=time.perf_counter() - started,
+                duration_seconds=duration,
+            )
+            logger.info(
+                "Node done | node=%s | status=%s | duration=%.3fs",
+                name,
+                status,
+                duration,
             )
             return {**update, "execution_trace": [event]}
 
@@ -189,7 +207,13 @@ def create_llm_geo_graph(
         )
         get_logger().info("Retriever prompt saved | path=%s", prompt_path)
         try:
+            call_started = time.perf_counter()
             decision, raw_results = ask_structured_with_tool_results(retriever, prompt)
+            get_logger().info(
+                "Retriever done | results=%d | duration=%.3fs",
+                len(raw_results),
+                time.perf_counter() - call_started,
+            )
             if not isinstance(decision, RetrievalDecision):
                 raise TypeError("Retriever returned an unexpected response type")
             retrieved = validate_provider_results(raw_results, data_directory)
@@ -221,15 +245,23 @@ def create_llm_geo_graph(
     def inspect_sources(state: LLMGeoState) -> dict[str, Any]:
         sources = [DataSource.model_validate(item) for item in state["data_sources"]]
         get_logger().info("Inspecting data | sources=%d", len(sources))
+        inspect_started = time.perf_counter()
         inspected = [inspect_source(source) for source in sources]
         failures = sum(source.inspection_error is not None for source in inspected)
+        duration = time.perf_counter() - inspect_started
         if failures:
             get_logger().warning(
-                "Data inspection completed with unavailable metadata | failures=%d",
+                "Data inspection partial | sources=%d | failures=%d | duration=%.3fs",
+                len(inspected),
                 failures,
+                duration,
             )
         else:
-            get_logger().info("Data inspection complete")
+            get_logger().info(
+                "Data inspection done | sources=%d | duration=%.3fs",
+                len(inspected),
+                duration,
+            )
         return {
             "data_sources": [source.model_dump(mode="json") for source in inspected],
             "status": "sources_inspected",
@@ -265,7 +297,11 @@ def create_llm_geo_graph(
             prompt=prompt,
         )
         get_logger().info("Planner prompt saved | path=%s", prompt_path)
+        call_started = time.perf_counter()
         result = ask_structured(planner, prompt)
+        get_logger().info(
+            "Planner done | duration=%.3fs", time.perf_counter() - call_started
+        )
         if not isinstance(result, WorkflowPlan):
             raise TypeError("Planner returned an unexpected response type")
         return {
@@ -388,7 +424,13 @@ def create_llm_geo_graph(
                 prompt=requirements,
             )
             get_logger().info("Coder prompt saved | path=%s", coder_prompt_path)
+            call_started = time.perf_counter()
             artifact = ask_structured(coder, requirements)
+            get_logger().info(
+                "Coder done | node=%s | duration=%.3fs",
+                operation_id,
+                time.perf_counter() - call_started,
+            )
             if not isinstance(artifact, CodeArtifact):
                 raise TypeError("Coder returned an unexpected response type")
             reviewer_prompt = build_review_prompt(artifact.code, requirements)
@@ -400,8 +442,15 @@ def create_llm_geo_graph(
                 prompt=reviewer_prompt,
             )
             get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
+            review_started = time.perf_counter()
             reviewed_code, review_issues = review_code(
                 reviewer, artifact.code, requirements, prompt=reviewer_prompt
+            )
+            get_logger().info(
+                "Review done | node=%s | issues=%d | duration=%.3fs",
+                operation_id,
+                len(review_issues),
+                time.perf_counter() - review_started,
             )
             step = WorkflowStep(
                 node_id=operation_id,
@@ -450,7 +499,11 @@ def create_llm_geo_graph(
             prompt=requirements,
         )
         get_logger().info("Assembler prompt saved | path=%s", assembler_prompt_path)
+        call_started = time.perf_counter()
         artifact = ask_structured(assembler, requirements)
+        get_logger().info(
+            "Assembler done | duration=%.3fs", time.perf_counter() - call_started
+        )
         if not isinstance(artifact, CodeArtifact):
             raise TypeError("Assembler returned an unexpected response type")
         reviewer_prompt = build_review_prompt(artifact.code, requirements)
@@ -462,8 +515,14 @@ def create_llm_geo_graph(
             prompt=reviewer_prompt,
         )
         get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
-        reviewed_code, _ = review_code(
+        review_started = time.perf_counter()
+        reviewed_code, review_issues = review_code(
             reviewer, artifact.code, requirements, prompt=reviewer_prompt
+        )
+        get_logger().info(
+            "Assembly review done | issues=%d | duration=%.3fs",
+            len(review_issues),
+            time.perf_counter() - review_started,
         )
         path = Path(state["save_dir"]) / "code" / "solution.py"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -499,7 +558,11 @@ def create_llm_geo_graph(
             prompt=requirements,
         )
         get_logger().info("Direct coder prompt saved | path=%s", direct_prompt_path)
+        call_started = time.perf_counter()
         artifact = ask_structured(direct_coder, requirements)
+        get_logger().info(
+            "Direct coder done | duration=%.3fs", time.perf_counter() - call_started
+        )
         if not isinstance(artifact, CodeArtifact):
             raise TypeError("Direct coder returned an unexpected response type")
         reviewer_prompt = build_review_prompt(artifact.code, requirements)
@@ -511,8 +574,14 @@ def create_llm_geo_graph(
             prompt=reviewer_prompt,
         )
         get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
-        reviewed_code, _ = review_code(
+        review_started = time.perf_counter()
+        reviewed_code, review_issues = review_code(
             reviewer, artifact.code, requirements, prompt=reviewer_prompt
+        )
+        get_logger().info(
+            "Direct review done | issues=%d | duration=%.3fs",
+            len(review_issues),
+            time.perf_counter() - review_started,
         )
         return {
             "assembled_code": reviewed_code,
@@ -537,7 +606,14 @@ def create_llm_geo_graph(
             }
             get_logger().warning("Execution skipped | code execution is disabled")
         else:
+            execution_started = time.perf_counter()
             execution = execute_code(state["assembled_code"], Path(state["save_dir"]))
+            get_logger().info(
+                "Code run done | exit=%s | files=%d | duration=%.3fs",
+                execution.get("returncode"),
+                len(execution.get("new_files", [])),
+                time.perf_counter() - execution_started,
+            )
         return {
             "execution": execution,
             "execution_attempts": attempt,
@@ -585,7 +661,11 @@ def create_llm_geo_graph(
             prompt=prompt,
         )
         get_logger().info("Debugger prompt saved | path=%s", debugger_prompt_path)
+        call_started = time.perf_counter()
         artifact = ask_structured(debugger, prompt)
+        get_logger().info(
+            "Debugger done | duration=%.3fs", time.perf_counter() - call_started
+        )
         if not isinstance(artifact, CodeArtifact):
             raise TypeError("Debugger returned an unexpected response type")
         get_logger().info("Program repair generated | retrying execution")
@@ -633,7 +713,11 @@ def create_llm_geo_graph(
             prompt=prompt,
         )
         get_logger().info("Validator prompt saved | path=%s", validator_prompt_path)
+        call_started = time.perf_counter()
         decision = ask_structured(validator, prompt)
+        get_logger().info(
+            "Validator done | duration=%.3fs", time.perf_counter() - call_started
+        )
         if not isinstance(decision, ResultValidation):
             raise TypeError("Validator returned an unexpected response type")
         issues = deterministic_issues + decision.issues
@@ -676,7 +760,8 @@ def create_llm_geo_graph(
                 state.get("execution_trace", []), "finalize_success", "complete"
             ),
         ]
-        write_execution_graph_artifacts(trace, save_dir)
+        if generate_mermaid:
+            write_execution_graph_artifacts(trace, save_dir)
         artifact_paths = sorted(snapshot_files(save_dir))
         state_path = save_dir / f"{state['task_name']}.state.json"
         persisted = {
@@ -717,7 +802,8 @@ def create_llm_geo_graph(
                 state.get("execution_trace", []), "finalize_failure", "failed"
             ),
         ]
-        write_execution_graph_artifacts(trace, save_dir)
+        if generate_mermaid:
+            write_execution_graph_artifacts(trace, save_dir)
         state_path = save_dir / f"{state['task_name']}.state.json"
         persisted = {
             key: value for key, value in state.items() if key != "assembled_code"
@@ -827,6 +913,7 @@ def run_llm_geo(
     max_execution_attempts: int = 10,
     log_level: int = logging.INFO,
     log_http: bool = True,
+    generate_mermaid: bool = True,
 ) -> LLMGeoState:
     """Create an isolated run and execute the complete LLM-GEO graph."""
     safe_task_name = re.sub(r"[^A-Za-z0-9._-]+", "_", task_name.strip()).strip("._")
@@ -839,10 +926,11 @@ def run_llm_geo(
         (destination / directory_name).mkdir(exist_ok=True)
     configure_logging(log_level, destination / "llm_geo.log", log_http=log_http)
     get_logger().info(
-        "Workflow started | task=%s | mode=%s | providers=%d | output=%s",
+        "Workflow started | task=%s | mode=%s | providers=%d | mermaid=%s | output=%s",
         safe_task_name,
         "direct" if direct_mode else "graph",
         len(retrieval_tools),
+        "enabled" if generate_mermaid else "disabled",
         destination,
     )
     if safe_task_name != task_name:
@@ -858,8 +946,11 @@ def run_llm_geo(
         checkpointer=SqliteSaver(connection),
         retrieval_tools=retrieval_tools,
         registered_operations=registered_operations,
+        generate_mermaid=generate_mermaid,
     )
-    system_artifacts = write_system_graph_artifacts(graph, destination)
+    system_artifacts = (
+        write_system_graph_artifacts(graph, destination) if generate_mermaid else []
+    )
     initial: LLMGeoState = {
         "task": task,
         "task_name": safe_task_name,
@@ -895,6 +986,7 @@ def resume_llm_geo(
     registered_operations: Sequence[RegisteredOperation] = (),
     log_level: int = logging.INFO,
     log_http: bool = True,
+    generate_mermaid: bool = True,
 ) -> LLMGeoState:
     """Resume an interrupted run from its durable checkpoint."""
     destination = Path(run_dir).resolve()
@@ -907,7 +999,10 @@ def resume_llm_geo(
     task_name = checkpoint_path.name.removesuffix(".checkpoints.sqlite")
     configure_logging(log_level, destination / "llm_geo.log", log_http=log_http)
     get_logger().info(
-        "Resuming workflow | task=%s | checkpoint=%s", task_name, checkpoint_path
+        "Resuming workflow | task=%s | mermaid=%s | checkpoint=%s",
+        task_name,
+        "enabled" if generate_mermaid else "disabled",
+        checkpoint_path,
     )
     connection = sqlite3.connect(checkpoint_path, check_same_thread=False)
     graph = create_llm_geo_graph(
@@ -915,8 +1010,10 @@ def resume_llm_geo(
         checkpointer=SqliteSaver(connection),
         retrieval_tools=retrieval_tools,
         registered_operations=registered_operations,
+        generate_mermaid=generate_mermaid,
     )
-    write_system_graph_artifacts(graph, destination)
+    if generate_mermaid:
+        write_system_graph_artifacts(graph, destination)
     config = {
         "configurable": {"thread_id": task_name},
         "recursion_limit": 100,

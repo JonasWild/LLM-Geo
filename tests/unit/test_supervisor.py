@@ -82,6 +82,7 @@ class SupervisorTests(unittest.TestCase):
             max_plan_attempts=4,
             max_execution_attempts=5,
             log_level=logging.DEBUG,
+            generate_mermaid=False,
         )
 
         result = run_geo_agent(agent, "Map the parks", "configured_name")
@@ -98,6 +99,8 @@ class SupervisorTests(unittest.TestCase):
             max_plan_attempts=4,
             max_execution_attempts=5,
             log_level=logging.DEBUG,
+            log_http=True,
+            generate_mermaid=False,
         )
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["save_dir"], "output/configured/run")
@@ -105,7 +108,7 @@ class SupervisorTests(unittest.TestCase):
 
     @patch.object(main_module, "configure_logging")
     @patch.object(main_module, "get_logger")
-    @patch.object(main_module, "init_chat_model")
+    @patch.object(main_module, "initialize_model")
     @patch.object(main_module, "run_geo_agent")
     @patch.object(main_module, "create_geo_agent")
     @patch.object(main_module, "run_llm_geo")
@@ -114,13 +117,13 @@ class SupervisorTests(unittest.TestCase):
         run_workflow: Mock,
         create_agent: Mock,
         run_agent: Mock,
-        init_model: Mock,
+        initialize_model: Mock,
         get_logger: Mock,
         configure_logging: Mock,
     ) -> None:
         model = object()
         compiled_agent = object()
-        init_model.return_value = model
+        initialize_model.return_value = model
         create_agent.return_value = compiled_agent
         run_agent.return_value = {
             "status": "complete",
@@ -143,6 +146,8 @@ class SupervisorTests(unittest.TestCase):
             max_plan_attempts=main_module.MAX_PLAN_ATTEMPTS,
             max_execution_attempts=main_module.MAX_EXECUTION_ATTEMPTS,
             log_level=main_module.LOG_LEVEL,
+            log_http=main_module.LOG_HTTP,
+            generate_mermaid=main_module.GENERATE_MERMAID,
         )
         run_agent.assert_called_once_with(compiled_agent, "Map parks", "parks")
 
