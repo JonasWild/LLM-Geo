@@ -8,7 +8,6 @@ import re
 import sqlite3
 import textwrap
 import time
-import traceback
 from collections.abc import Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -17,7 +16,6 @@ from typing import Any
 
 import networkx as nx
 from langchain_core.language_models import BaseChatModel
-from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -31,17 +29,12 @@ from llm_geo.middleware.logging import (
 from llm_geo.operations.registry import RegisteredOperation
 from llm_geo.subagents.runtime import (
     ask_structured,
-    ask_structured_with_tool_results,
     build_review_prompt,
     create_structured_agent,
     review_code,
 )
 from llm_geo.tools.code_execution import execute_code, snapshot_files
-from llm_geo.tools.data_inspection import inspect_source, to_json, to_toon
-from llm_geo.tools.data_retrieval import (
-    provider_tool_instructions,
-    validate_provider_results,
-)
+from llm_geo.tools.data_inspection import to_json, to_toon
 from llm_geo.tools.mermaid_diagnostics import (
     execution_event,
     write_execution_graph_artifacts,
@@ -50,14 +43,13 @@ from llm_geo.tools.mermaid_diagnostics import (
 from llm_geo.tools.workflow_graph import (
     operation_contract,
     plan_to_graph,
+    registered_operation_bridge,
     validate_workflow_plan,
     write_graph_artifacts,
 )
 from llm_geo.utils.models import (
     CodeArtifact,
-    DataSource,
     LLMGeoState,
-    RetrievalDecision,
     ResultValidation,
     ReviewDecision,
     WorkflowPlan,
@@ -104,27 +96,18 @@ def timed_step(
 def create_llm_geo_graph(
     model: BaseChatModel,
     checkpointer: Any | None = None,
-    retrieval_tools: Sequence[BaseTool] = (),
     registered_operations: Sequence[RegisteredOperation] = (),
     generate_mermaid: bool = True,
     slow_step_seconds: float = 10.0,
 ) -> CompiledStateGraph:
     """Create the complete, staged LLM-GEO production graph."""
-    provider_tools = list(retrieval_tools)
     trusted_operations = tuple(registered_operations)
     trusted_by_id = {operation.id: operation for operation in trusted_operations}
-    retriever = create_structured_agent(
-        model,
-        "You are the LLM-GEO data retrieval coordinator. Use only the registered "
-        "provider tools to retrieve data. Never invent URLs, paths, providers, or "
-        "data. After the tools respond, select only locations they returned.",
-        RetrievalDecision,
-        tools=provider_tools,
-    )
     planner = create_structured_agent(
         model,
-        "You are the LLM-GEO workflow planner. Produce a concise alternating "
-        "data/operation DAG. " + GIS_RULES,
+        "You are the LLM-GEO workflow planner. Produce one concise alternating "
+        "data/operation DAG that includes data retrieval. Select trusted registered "
+        "operations whenever their contracts match. " + GIS_RULES,
         WorkflowPlan,
     )
     coder = create_structured_agent(
@@ -157,13 +140,6 @@ def create_llm_geo_graph(
         "Reject plausible-looking but unverified results. " + GIS_RULES,
         ResultValidation,
     )
-    direct_coder = create_structured_agent(
-        model,
-        "Write one complete robust GIS program for the task, including saved "
-        "outputs and a result manifest. " + GIS_RULES,
-        CodeArtifact,
-    )
-
     def traced_node(name: str, node: Any) -> Any:
         """Log, time, and checkpoint one top-level workflow node."""
 
@@ -220,95 +196,6 @@ def create_llm_geo_graph(
 
         return invoke
 
-    def retrieve_sources(state: LLMGeoState) -> dict[str, Any]:
-        if not provider_tools:
-            return {
-                "retrieval_error": "No data retrieval providers are configured.",
-                "status": "retrieval_failed",
-            }
-        data_directory = Path(state["save_dir"]) / "data"
-        data_directory.mkdir(parents=True, exist_ok=True)
-        get_logger().info("Retrieving data | providers=%d", len(provider_tools))
-        prompt = textwrap.dedent(f"""
-        TASK:
-        {state["task"]}
-
-        {provider_tool_instructions(data_directory)}
-
-        Call the applicable provider tools. Return only the local locations returned
-        by those tool calls, in `selected_locations`.
-        """)
-        prompt_path = save_prompt(
-            state["save_dir"],
-            stage="retrieve",
-            agent="retriever",
-            subject="sources",
-            prompt=prompt,
-        )
-        get_logger().info("Retriever prompt saved | path=%s", prompt_path)
-        try:
-            with timed_step("retriever.call", slow_step_seconds):
-                decision, raw_results = ask_structured_with_tool_results(
-                    retriever, prompt
-                )
-            get_logger().info(
-                "Retriever response | results=%d",
-                len(raw_results),
-            )
-            if not isinstance(decision, RetrievalDecision):
-                raise TypeError("Retriever returned an unexpected response type")
-            retrieved = validate_provider_results(raw_results, data_directory)
-            sources_by_location = {source.location: source for source in retrieved}
-            if len(decision.selected_locations) != len(
-                set(decision.selected_locations)
-            ):
-                raise ValueError("Retriever selected the same location more than once.")
-            unknown = set(decision.selected_locations) - set(sources_by_location)
-            if unknown:
-                raise ValueError(
-                    "Retriever selected locations not returned by a provider: "
-                    + ", ".join(sorted(unknown))
-                )
-            sources = [
-                sources_by_location[path] for path in decision.selected_locations
-            ]
-            get_logger().info("Data retrieved | sources=%d", len(sources))
-            return {
-                "data_sources": [source.model_dump(mode="json") for source in sources],
-                "status": "sources_retrieved",
-            }
-        except Exception as error:
-            traceback.print_exception(error)
-            message = f"{type(error).__name__}: {error}"
-            get_logger().warning("Data retrieval failed | reason=%s", message)
-            return {"retrieval_error": message, "status": "retrieval_failed"}
-
-    def inspect_sources(state: LLMGeoState) -> dict[str, Any]:
-        sources = [DataSource.model_validate(item) for item in state["data_sources"]]
-        get_logger().info("Inspecting data | sources=%d", len(sources))
-        inspected = []
-        for index, source in enumerate(sources, start=1):
-            with timed_step(
-                "source.inspect",
-                slow_step_seconds,
-                source=index,
-                total=len(sources),
-            ):
-                inspected.append(inspect_source(source))
-        failures = sum(source.inspection_error is not None for source in inspected)
-        if failures:
-            get_logger().warning(
-                "Data inspection partial | sources=%d | failures=%d",
-                len(inspected),
-                failures,
-            )
-        else:
-            get_logger().info("Data inspection ready | sources=%d", len(inspected))
-        return {
-            "data_sources": [source.model_dump(mode="json") for source in inspected],
-            "status": "sources_inspected",
-        }
-
     def plan_workflow(state: LLMGeoState) -> dict[str, Any]:
         attempt = state.get("plan_attempts", 0) + 1
         get_logger().info(
@@ -317,17 +204,21 @@ def create_llm_geo_graph(
             state.get("max_plan_attempts", 3),
         )
         prompt = (
-            f"TASK:\n{state['task']}\n\nINSPECTED SOURCES:\n"
-            f"{to_toon(state['data_sources'])}\n\nPREVIOUS PLAN ISSUES TO CORRECT:\n"
+            f"TASK:\n{state['task']}\n\nPREVIOUS PLAN ISSUES TO CORRECT:\n"
             f"{to_toon(state.get('plan_issues', []))}\n\nREGISTERED OPERATIONS:\n"
             f"{to_toon([operation.catalog_entry() for operation in trusted_operations])}\n\n"
-            "Return all input, intermediate, and final data nodes. Each edge must "
-            "alternate data and operation. Copy each system-retrieved GeoJSON source "
-            "location exactly into one source data node's data_path. Use GeoPandas to "
-            "load source nodes. Data nodes must leave implementation as 'generated' "
+            "Return one DAG containing retrieval, transformation, and output. Each "
+            "edge must alternate data and operation. Retrieval must use matching "
+            "registered operations; their outputs are EPSG:4326 GeoDataFrames also "
+            "persisted as GeoJSON. Put task-derived scalar/configuration values in "
+            "the operation's literal_arguments. Incoming data edges bind in declared "
+            "parameter order to parameters not supplied as literals. Data nodes must "
+            "leave implementation as 'generated' "
             "and registered_operation_id as null. Only operation nodes select an "
             "implementation: for a matching registered operation, set it to "
             "'registered' and set registered_operation_id exactly to the catalog ID. "
+            "A registered retrieval operation may have no incoming data edge when "
+            "literal arguments and defaults satisfy its parameters. "
             "For a generated operation, use implementation 'generated' and omit "
             "registered_operation_id."
         )
@@ -352,8 +243,7 @@ def create_llm_geo_graph(
 
     def validate_plan(state: LLMGeoState) -> dict[str, Any]:
         plan = WorkflowPlan.model_validate(state["plan"])
-        sources = [DataSource.model_validate(item) for item in state["data_sources"]]
-        issues = validate_workflow_plan(plan, sources, trusted_operations)
+        issues = validate_workflow_plan(plan, [], trusted_operations)
         if issues:
             get_logger().warning(
                 "Workflow plan rejected | issues=%d | %s",
@@ -381,12 +271,6 @@ def create_llm_geo_graph(
             return "replan"
         return "failed"
 
-    def inspection_route(state: LLMGeoState) -> str:
-        return "direct" if state.get("direct_mode") else "plan"
-
-    def retrieval_route(state: LLMGeoState) -> str:
-        return "failed" if state.get("retrieval_error") else "inspect"
-
     def generate_operations(state: LLMGeoState) -> dict[str, Any]:
         plan = WorkflowPlan.model_validate(state["plan"])
         graph = plan_to_graph(plan)
@@ -409,11 +293,8 @@ def create_llm_geo_graph(
             selected_id = node_map[operation_id].registered_operation_id
             if node_map[operation_id].implementation == "registered":
                 registered = trusted_by_id[selected_id or ""]
-                arguments = ", ".join(contract["inputs"])
-                bridge_code = (
-                    f"from {registered.module} import {registered.name}\n\n"
-                    f"def {operation_id}({arguments}):\n"
-                    f"    return {registered.name}({arguments})"
+                bridge_code = registered_operation_bridge(
+                    plan, operation_id, registered
                 )
                 step = WorkflowStep(
                     node_id=operation_id,
@@ -447,8 +328,7 @@ def create_llm_geo_graph(
                 if node_id in nx.descendants(graph, operation_id)
             ]
             requirements = (
-                f"TASK:\n{state['task']}\n\nSOURCES:\n"
-                f"{to_toon(state['data_sources'])}\n\nPLAN:\n{to_toon(state['plan'])}"
+                f"TASK:\n{state['task']}\n\nPLAN:\n{to_toon(state['plan'])}"
                 f"\n\nCONTRACT:\n{to_toon(contract)}\n\nANCESTOR CODE:\n"
                 f"{ancestor_code or '(none)'}\n\nDESCENDANT CONTRACTS:\n"
                 f"{to_toon(descendant_contracts)}\n\nThe returned code must start "
@@ -509,9 +389,6 @@ def create_llm_geo_graph(
         TASK:
         {state["task"]}
 
-        DATA SOURCES:
-        {to_toon(state["data_sources"])}
-
         WORKFLOW PLAN:
         {to_toon(state["plan"])}
 
@@ -562,54 +439,6 @@ def create_llm_geo_graph(
             "assembled_code": reviewed_code,
             "artifacts": state.get("artifacts", []) + [str(path)],
             "status": "program_assembled",
-        }
-
-    def generate_direct_program(state: LLMGeoState) -> dict[str, Any]:
-        get_logger().info("Generating direct solution | graph decomposition=skipped")
-        requirements = f"""
-        TASK:
-        {state["task"]}
-
-        INSPECTED SOURCES:
-        {to_toon(state["data_sources"])}
-
-        Return a complete executable program. Print important results, save requested
-        maps/charts, and write llm_geo_result.json with a summary, serializable result
-        values, and artifact paths. The current working directory is the run's results
-        directory: write every generated artifact there with a relative path. Treat
-        the supplied source paths as read-only and never derive output paths from them.
-        """
-        requirements = textwrap.dedent(requirements)
-        direct_prompt_path = save_prompt(
-            state["save_dir"],
-            stage="direct",
-            agent="coder",
-            subject="program",
-            prompt=requirements,
-        )
-        get_logger().info("Direct coder prompt saved | path=%s", direct_prompt_path)
-        with timed_step("direct_coder.call", slow_step_seconds):
-            artifact = ask_structured(direct_coder, requirements)
-        if not isinstance(artifact, CodeArtifact):
-            raise TypeError("Direct coder returned an unexpected response type")
-        reviewer_prompt = build_review_prompt(artifact.code, requirements)
-        reviewer_prompt_path = save_prompt(
-            state["save_dir"],
-            stage="direct",
-            agent="reviewer",
-            subject="program",
-            prompt=reviewer_prompt,
-        )
-        get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
-        with timed_step("reviewer.call", slow_step_seconds, subject="direct"):
-            reviewed_code, review_issues = review_code(
-                reviewer, artifact.code, requirements, prompt=reviewer_prompt
-            )
-        get_logger().info("Direct program reviewed | issues=%d", len(review_issues))
-        return {
-            "assembled_code": reviewed_code,
-            "operations": [],
-            "status": "direct_program_generated",
         }
 
     def execute_program(state: LLMGeoState) -> dict[str, Any]:
@@ -663,9 +492,6 @@ def create_llm_geo_graph(
         prompt = f"""
         TASK:
         {state["task"]}
-
-        DATA SOURCES:
-        {to_toon(state["data_sources"])}
 
         FAILURE OR VALIDATION ISSUES:
         {to_toon(state.get("execution", {}))}
@@ -849,19 +675,11 @@ def create_llm_geo_graph(
         }
 
     graph = StateGraph(LLMGeoState)
-    graph.add_node(
-        "retrieve_sources", traced_node("retrieve_sources", retrieve_sources)
-    )
-    graph.add_node("inspect_sources", traced_node("inspect_sources", inspect_sources))
     graph.add_node("plan_workflow", traced_node("plan_workflow", plan_workflow))
     graph.add_node("validate_plan", traced_node("validate_plan", validate_plan))
     graph.add_node(
         "generate_operations",
         traced_node("generate_operations", generate_operations),
-    )
-    graph.add_node(
-        "generate_direct_program",
-        traced_node("generate_direct_program", generate_direct_program),
     )
     graph.add_node(
         "assemble_program", traced_node("assemble_program", assemble_program)
@@ -872,17 +690,7 @@ def create_llm_geo_graph(
     graph.add_node("finalize_success", finalize_success)
     graph.add_node("finalize_failure", finalize_failure)
 
-    graph.add_edge(START, "retrieve_sources")
-    graph.add_conditional_edges(
-        "retrieve_sources",
-        retrieval_route,
-        {"inspect": "inspect_sources", "failed": "finalize_failure"},
-    )
-    graph.add_conditional_edges(
-        "inspect_sources",
-        inspection_route,
-        {"plan": "plan_workflow", "direct": "generate_direct_program"},
-    )
+    graph.add_edge(START, "plan_workflow")
     graph.add_edge("plan_workflow", "validate_plan")
     graph.add_conditional_edges(
         "validate_plan",
@@ -894,7 +702,6 @@ def create_llm_geo_graph(
         },
     )
     graph.add_edge("generate_operations", "assemble_program")
-    graph.add_edge("generate_direct_program", "execute_program")
     graph.add_edge("assemble_program", "execute_program")
     graph.add_conditional_edges(
         "execute_program",
@@ -926,10 +733,8 @@ def run_llm_geo(
     task: str,
     task_name: str,
     *,
-    retrieval_tools: Sequence[BaseTool] = (),
     registered_operations: Sequence[RegisteredOperation] = (),
     output_root: str | Path = "output",
-    direct_mode: bool = False,
     allow_code_execution: bool = True,
     max_plan_attempts: int = 3,
     max_execution_attempts: int = 10,
@@ -949,10 +754,9 @@ def run_llm_geo(
         (destination / directory_name).mkdir(exist_ok=True)
     configure_logging(log_level, destination / "llm_geo.log", log_http=log_http)
     get_logger().info(
-        "Workflow started | task=%s | mode=%s | providers=%d | mermaid=%s | slow=%.3fs | output=%s",
+        "Workflow started | task=%s | operations=%d | mermaid=%s | slow=%.3fs | output=%s",
         safe_task_name,
-        "direct" if direct_mode else "graph",
-        len(retrieval_tools),
+        len(registered_operations),
         "enabled" if generate_mermaid else "disabled",
         slow_step_seconds,
         destination,
@@ -969,7 +773,6 @@ def run_llm_geo(
         graph = create_llm_geo_graph(
             model,
             checkpointer=SqliteSaver(connection),
-            retrieval_tools=retrieval_tools,
             registered_operations=registered_operations,
             generate_mermaid=generate_mermaid,
             slow_step_seconds=slow_step_seconds,
@@ -982,7 +785,6 @@ def run_llm_geo(
         "task": task,
         "task_name": safe_task_name,
         "save_dir": str(destination),
-        "direct_mode": direct_mode,
         "allow_code_execution": allow_code_execution,
         "max_plan_attempts": max_plan_attempts,
         "max_execution_attempts": max_execution_attempts,
@@ -1010,7 +812,6 @@ def resume_llm_geo(
     model: BaseChatModel,
     run_dir: str | Path,
     *,
-    retrieval_tools: Sequence[BaseTool] = (),
     registered_operations: Sequence[RegisteredOperation] = (),
     log_level: int = logging.INFO,
     log_http: bool = True,
@@ -1039,7 +840,6 @@ def resume_llm_geo(
         graph = create_llm_geo_graph(
             model,
             checkpointer=SqliteSaver(connection),
-            retrieval_tools=retrieval_tools,
             registered_operations=registered_operations,
             generate_mermaid=generate_mermaid,
             slow_step_seconds=slow_step_seconds,

@@ -45,15 +45,23 @@ def validate_workflow_plan(
         issues.append("The workflow must be weakly connected.")
     for node in plan.nodes:
         if node.kind == "operation":
-            if graph.in_degree(node.id) == 0:
-                issues.append(f"Operation {node.id!r} has no input data.")
             if graph.out_degree(node.id) == 0:
                 issues.append(f"Operation {node.id!r} has no output data.")
             if node.implementation == "registered" and not node.registered_operation_id:
                 issues.append(f"Registered operation {node.id!r} has no operation ID.")
             if node.implementation == "generated" and node.registered_operation_id:
                 issues.append(f"Generated operation {node.id!r} has a registered operation ID.")
-        elif node.implementation != "generated" or node.registered_operation_id:
+            if node.implementation == "generated" and node.literal_arguments:
+                issues.append(
+                    f"Generated operation {node.id!r} cannot use literal arguments."
+                )
+            if node.implementation == "generated" and graph.in_degree(node.id) == 0:
+                issues.append(f"Generated operation {node.id!r} has no input data.")
+        elif (
+            node.implementation != "generated"
+            or node.registered_operation_id
+            or node.literal_arguments
+        ):
             issues.append(f"Data node {node.id!r} cannot select an implementation.")
     sinks = [node for node in plan.nodes if graph.out_degree(node.id) == 0]
     if not sinks or any(node.kind != "data" for node in sinks):
@@ -61,9 +69,7 @@ def validate_workflow_plan(
     planned_paths = {node.data_path for node in plan.nodes if node.data_path}
     for source in sources:
         if source.location not in planned_paths:
-            issues.append(
-                f"Provided data source is absent from the plan: {source.location}"
-            )
+            issues.append(f"Provided data source is absent from the plan: {source.location}")
     registry = {operation.id: operation for operation in registered_operations}
     for node in plan.nodes:
         if node.implementation != "registered" or not node.registered_operation_id:
@@ -75,11 +81,36 @@ def validate_workflow_plan(
                 f"{node.registered_operation_id!r}."
             )
             continue
-        if graph.in_degree(node.id) != len(operation.inputs):
+        parameter_names = [name for name, _, _ in operation.inputs]
+        literal_names = set(node.literal_arguments)
+        unknown_literals = literal_names - set(parameter_names)
+        if unknown_literals:
             issues.append(
-                f"Registered operation {node.id!r} expects {len(operation.inputs)} "
-                f"inputs but its graph node has {graph.in_degree(node.id)}."
+                f"Registered operation {node.id!r} has unknown literal arguments: "
+                + ", ".join(sorted(unknown_literals))
             )
+        available_graph_parameters = [
+            name for name in parameter_names if name not in literal_names
+        ]
+        graph_input_count = graph.in_degree(node.id)
+        if graph_input_count > len(available_graph_parameters):
+            issues.append(
+                f"Registered operation {node.id!r} has too many graph inputs."
+            )
+        else:
+            graph_bound = set(available_graph_parameters[:graph_input_count])
+            missing_required = [
+                name
+                for name in parameter_names
+                if name not in literal_names
+                and name not in graph_bound
+                and name not in operation.defaults
+            ]
+            if missing_required:
+                issues.append(
+                    f"Registered operation {node.id!r} is missing required arguments: "
+                    + ", ".join(missing_required)
+                )
         if graph.out_degree(node.id) != 1:
             issues.append(
                 f"Registered operation {node.id!r} returns one output but its graph "
@@ -174,3 +205,32 @@ def operation_contract(plan: WorkflowPlan, operation_id: str) -> dict[str, Any]:
         "signature": f"def {operation_id}({', '.join(inputs)}):",
         "return_statement": f"return {', '.join(outputs)}",
     }
+
+
+def registered_operation_bridge(
+    plan: WorkflowPlan,
+    operation_id: str,
+    operation: "RegisteredOperation",
+) -> str:
+    """Render a thin wrapper binding graph inputs and planner-supplied literals."""
+    contract = operation_contract(plan, operation_id)
+    node = next(node for node in plan.nodes if node.id == operation_id)
+    graph_arguments = iter(contract["inputs"])
+    call_arguments: list[str] = []
+    for parameter_name, _, _ in operation.inputs:
+        if parameter_name in node.literal_arguments:
+            call_arguments.append(
+                f"{parameter_name}={node.literal_arguments[parameter_name]!r}"
+            )
+            continue
+        try:
+            graph_argument = next(graph_arguments)
+        except StopIteration:
+            continue
+        call_arguments.append(f"{parameter_name}={graph_argument}")
+    arguments = ", ".join(contract["inputs"])
+    return (
+        f"from {operation.module} import {operation.name}\n\n"
+        f"def {operation_id}({arguments}):\n"
+        f"    return {operation.name}({', '.join(call_arguments)})"
+    )

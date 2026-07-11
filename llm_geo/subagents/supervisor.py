@@ -10,7 +10,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
@@ -21,12 +21,10 @@ from llm_geo.tools.data_inspection import from_toon, to_toon
 
 def create_geo_agent(
     model: BaseChatModel,
-    retrieval_tools: Sequence[BaseTool] = (),
     registered_operations: Sequence[RegisteredOperation] = (),
     *,
     default_task_name: str | None = None,
     output_root: str | Path = "output",
-    direct_mode: bool = False,
     allow_code_execution: bool = True,
     max_plan_attempts: int = 3,
     max_execution_attempts: int = 10,
@@ -39,7 +37,7 @@ def create_geo_agent(
 
     @tool
     def run_geospatial_analysis(task: str, task_name: str | None = None) -> str:
-        """Run the retrieved, inspected, planned, reviewed, and validated workflow."""
+        """Run the planned, reviewed, executed, and validated geospatial workflow."""
         selected_task_name = default_task_name or task_name
         if not selected_task_name:
             raise ValueError(
@@ -49,10 +47,8 @@ def create_geo_agent(
             model,
             task,
             selected_task_name,
-            retrieval_tools=retrieval_tools,
             registered_operations=registered_operations,
             output_root=output_root,
-            direct_mode=direct_mode,
             allow_code_execution=allow_code_execution,
             max_plan_attempts=max_plan_attempts,
             max_execution_attempts=max_execution_attempts,
@@ -78,7 +74,7 @@ def create_geo_agent(
         system_prompt=(
             "You are the LLM-GEO supervisor. For every requested geospatial analysis, "
             "call run_geospatial_analysis. Data may be retrieved only through the "
-            "workflow's registered provider tools. Never claim execution or validation "
+            "workflow's registered operations. Never claim execution or validation "
             "unless the workflow tool reports it."
         ),
         backend=StateBackend(),

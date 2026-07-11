@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 import requests
-from langchain_core.tools import tool
+import geopandas as gpd
 
 from llm_geo.middleware.logging import get_logger, http_logging_enabled
-from llm_geo.tools.data_inspection import to_toon
+from llm_geo.operations import code
 
 
 OVERPASS_ENDPOINTS = (
@@ -36,21 +36,12 @@ def _write_feature_collection(output_path: str, collection: dict[str, Any]) -> P
     return path
 
 
-def _source_result(
-    *,
-    description: str,
-    location: Path,
-    provider: str,
-    request: dict[str, Any],
-) -> str:
-    return to_toon(
-        {
-            "description": description,
-            "location": str(location),
-            "provider": provider,
-            "request": request,
-        }
-    )
+def _as_wgs84_frame(collection: dict[str, Any]) -> gpd.GeoDataFrame:
+    """Convert a provider FeatureCollection into the common runtime representation."""
+    if not collection["features"]:
+        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+    frame = gpd.GeoDataFrame.from_features(collection["features"], crs="EPSG:4326")
+    return frame.set_crs("EPSG:4326", allow_override=True)
 
 
 def _overpass_feature(element: dict[str, Any]) -> dict[str, Any] | None:
@@ -178,37 +169,56 @@ def _request_overpass(query: str) -> tuple[requests.Response, str]:
     raise RuntimeError("All Overpass endpoints failed")
 
 
-@tool
-def overpass_to_geojson(overpass_ql: str, output_path: str, description: str) -> str:
-    """Run an Overpass QL query and write its returned OSM features as GeoJSON."""
+@code
+def overpass_to_geojson(
+    overpass_ql: str, output_path: str, description: str
+) -> gpd.GeoDataFrame:
+    """Retrieve OSM features with Overpass and persist an EPSG:4326 GeoJSON file.
+
+    Args:
+        overpass_ql: Complete spatially bounded Overpass QL query.
+        output_path: Relative GeoJSON output path in the run results directory.
+        description: Short human-readable description of the requested dataset.
+
+    Returns:
+        Retrieved features as an EPSG:4326 GeoDataFrame.
+    """
     if not overpass_ql.strip():
         raise ValueError("overpass_ql must not be empty")
     if not description.strip():
         raise ValueError("description must not be empty")
     response, endpoint = _request_overpass(overpass_ql)
     collection = _overpass_feature_collection(response.json())
-    path = _write_feature_collection(output_path, collection)
-    return _source_result(
-        description=description,
-        location=path,
-        provider="overpass",
-        request={
-            "endpoint": endpoint,
-            "query": overpass_ql,
-            "feature_count": len(collection["features"]),
-        },
+    _write_feature_collection(output_path, collection)
+    get_logger().info(
+        "GeoJSON retrieved | provider=overpass | endpoint=%s | description=%s | features=%d",
+        endpoint,
+        description,
+        len(collection["features"]),
     )
+    return _as_wgs84_frame(collection)
 
 
-@tool
+@code
 def nominatim_to_geojson(
     query: str,
     output_path: str,
     description: str,
     limit: int = 10,
     country_codes: str | None = None,
-) -> str:
-    """Search Nominatim and write its GeoJSON FeatureCollection to a local file."""
+) -> gpd.GeoDataFrame:
+    """Search Nominatim and persist an EPSG:4326 GeoJSON FeatureCollection.
+
+    Args:
+        query: Free-text place query.
+        output_path: Relative GeoJSON output path in the run results directory.
+        description: Short human-readable description of the requested dataset.
+        limit: Maximum number of returned features, between 1 and 50.
+        country_codes: Optional comma-separated ISO 3166-1 alpha-2 country codes.
+
+    Returns:
+        Retrieved features as an EPSG:4326 GeoDataFrame.
+    """
     global _last_nominatim_request
     if not query.strip():
         raise ValueError("query must not be empty")
@@ -249,19 +259,14 @@ def nominatim_to_geojson(
         raise ValueError("Nominatim did not return a GeoJSON FeatureCollection")
     if not isinstance(collection.get("features"), list):
         raise ValueError("Nominatim GeoJSON response did not contain a features list")
-    path = _write_feature_collection(output_path, collection)
-    return _source_result(
-        description=description,
-        location=path,
-        provider="nominatim",
-        request={
-            "endpoint": endpoint,
-            "query": query,
-            "limit": limit,
-            "country_codes": country_codes,
-            "feature_count": len(collection["features"]),
-        },
+    _write_feature_collection(output_path, collection)
+    get_logger().info(
+        "GeoJSON retrieved | provider=nominatim | endpoint=%s | description=%s | features=%d",
+        endpoint,
+        description,
+        len(collection["features"]),
     )
+    return _as_wgs84_frame(collection)
 
 
-PUBLIC_RETRIEVAL_TOOLS = [overpass_to_geojson, nominatim_to_geojson]
+PUBLIC_RETRIEVAL_OPERATIONS = (overpass_to_geojson, nominatim_to_geojson)

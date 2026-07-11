@@ -7,7 +7,10 @@ import unittest
 from pydantic import ValidationError
 
 from llm_geo.operations import code, registered_operations
-from llm_geo.tools.workflow_graph import validate_workflow_plan
+from llm_geo.tools.workflow_graph import (
+    registered_operation_bridge,
+    validate_workflow_plan,
+)
 from llm_geo.utils.models import DataSource, PlanEdge, PlanNode, WorkflowPlan
 
 
@@ -22,6 +25,20 @@ def integer_to_text(value: int) -> str:
         Text representation of the integer.
     """
     return str(value)
+
+
+@code
+def retrieve_fixture(query: str, limit: int = 10) -> str:
+    """Retrieve a fixture dataset.
+
+    Args:
+        query: Dataset query.
+        limit: Maximum result count.
+
+    Returns:
+        Retrieved fixture identifier.
+    """
+    return f"{query}:{limit}"
 
 
 class RegisteredOperationTests(unittest.TestCase):
@@ -91,6 +108,59 @@ class RegisteredOperationTests(unittest.TestCase):
                 implementation="registered",
                 registered_operation_id="example.operation",
             )
+
+    def test_zero_input_registered_operation_accepts_literal_arguments(self) -> None:
+        operation = next(
+            item for item in registered_operations() if item.name == "retrieve_fixture"
+        )
+        plan = WorkflowPlan(
+            rationale="Retrieve through a trusted operation.",
+            nodes=[
+                PlanNode(
+                    id="retrieve",
+                    kind="operation",
+                    description="Retrieve data",
+                    implementation="registered",
+                    registered_operation_id=operation.id,
+                    literal_arguments={"query": "parks"},
+                ),
+                PlanNode(id="features", kind="data", description="Retrieved data"),
+            ],
+            edges=[PlanEdge(source="retrieve", target="features")],
+        )
+
+        self.assertEqual(validate_workflow_plan(plan, [], [operation]), [])
+        self.assertEqual(
+            registered_operation_bridge(plan, "retrieve", operation),
+            f"from {__name__} import retrieve_fixture\n\n"
+            "def retrieve():\n"
+            "    return retrieve_fixture(query='parks')",
+        )
+
+    def test_registered_operation_rejects_unknown_and_missing_literals(self) -> None:
+        operation = next(
+            item for item in registered_operations() if item.name == "retrieve_fixture"
+        )
+        plan = WorkflowPlan(
+            rationale="Invalid literal bindings.",
+            nodes=[
+                PlanNode(
+                    id="retrieve",
+                    kind="operation",
+                    description="Retrieve data",
+                    implementation="registered",
+                    registered_operation_id=operation.id,
+                    literal_arguments={"unexpected": True},
+                ),
+                PlanNode(id="features", kind="data", description="Retrieved data"),
+            ],
+            edges=[PlanEdge(source="retrieve", target="features")],
+        )
+
+        issues = validate_workflow_plan(plan, [], [operation])
+
+        self.assertTrue(any("unknown literal arguments" in issue for issue in issues))
+        self.assertTrue(any("missing required arguments: query" in issue for issue in issues))
 
 
 if __name__ == "__main__":

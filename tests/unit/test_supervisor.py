@@ -69,15 +69,12 @@ class SupervisorTests(unittest.TestCase):
             "artifacts": ["results/map.png"],
         }
         model = _ToolCallingModel()
-        retrieval_tools: list[Any] = []
         registered_operations: list[Any] = []
         agent = create_geo_agent(
             model,
-            retrieval_tools=retrieval_tools,
             registered_operations=registered_operations,
             default_task_name="configured_name",
             output_root=Path("custom-output"),
-            direct_mode=True,
             allow_code_execution=False,
             max_plan_attempts=4,
             max_execution_attempts=5,
@@ -92,10 +89,8 @@ class SupervisorTests(unittest.TestCase):
             model,
             "Map the parks",
             "configured_name",
-            retrieval_tools=retrieval_tools,
             registered_operations=registered_operations,
             output_root=Path("custom-output"),
-            direct_mode=True,
             allow_code_execution=False,
             max_plan_attempts=4,
             max_execution_attempts=5,
@@ -139,11 +134,9 @@ class SupervisorTests(unittest.TestCase):
         run_workflow.assert_not_called()
         create_agent.assert_called_once_with(
             model,
-            retrieval_tools=main_module.RETRIEVAL_TOOLS,
             registered_operations=main_module.REGISTERED_OPERATIONS,
             default_task_name="parks",
             output_root=main_module.OUTPUT_ROOT,
-            direct_mode=main_module.DIRECT_MODE,
             allow_code_execution=main_module.ALLOW_CODE_EXECUTION,
             max_plan_attempts=main_module.MAX_PLAN_ATTEMPTS,
             max_execution_attempts=main_module.MAX_EXECUTION_ATTEMPTS,

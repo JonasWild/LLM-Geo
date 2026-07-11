@@ -9,8 +9,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from llm_geo.tools.data_retrieval import validate_provider_results
-from llm_geo.tools.data_inspection import from_toon, to_toon
-from llm_geo.tools.public_data_providers import nominatim_to_geojson, overpass_to_geojson
+from llm_geo.tools.data_inspection import to_toon
+from llm_geo.tools.public_data_providers import (
+    _as_wgs84_frame,
+    nominatim_to_geojson,
+    overpass_to_geojson,
+)
 
 
 class ProviderResultValidationTests(unittest.TestCase):
@@ -80,7 +84,13 @@ class ProviderResultValidationTests(unittest.TestCase):
                 validate_provider_results([result], data_directory)
 
 
-class PublicProviderToolTests(unittest.TestCase):
+class PublicProviderOperationTests(unittest.TestCase):
+    def test_empty_feature_collection_is_an_epsg4326_geodataframe(self) -> None:
+        frame = _as_wgs84_frame({"type": "FeatureCollection", "features": []})
+
+        self.assertTrue(frame.empty)
+        self.assertEqual(frame.crs.to_epsg(), 4326)
+
     @patch("llm_geo.tools.public_data_providers.requests.post")
     def test_overpass_converts_nodes_and_ways_to_feature_collection(
         self, post: Mock
@@ -115,26 +125,22 @@ class PublicProviderToolTests(unittest.TestCase):
                 ),
                 patch("llm_geo.tools.public_data_providers.get_logger") as get_logger,
             ):
-                result = from_toon(
-                    overpass_to_geojson.invoke(
-                        {
-                            "overpass_ql": "node(1);out geom;",
-                            "output_path": str(output_path),
-                            "description": "Sample OSM data",
-                        }
-                    )
+                result = overpass_to_geojson(
+                    overpass_ql="node(1);out geom;",
+                    output_path=str(output_path),
+                    description="Sample OSM data",
                 )
 
             collection = json.loads(output_path.read_text(encoding="utf-8"))
-            self.assertEqual(result["provider"], "overpass")
-            self.assertEqual(result["request"]["endpoint"], configured_endpoint)
+            self.assertEqual(result.crs.to_epsg(), 4326)
+            self.assertEqual(len(result), 2)
             self.assertEqual(collection["type"], "FeatureCollection")
             self.assertEqual(collection["features"][0]["geometry"]["type"], "Point")
             self.assertEqual(collection["features"][1]["geometry"]["type"], "Polygon")
             post.assert_called_once()
             self.assertEqual(post.call_args.args[0], configured_endpoint)
             self.assertIn("User-Agent", post.call_args.kwargs["headers"])
-            self.assertEqual(get_logger.return_value.info.call_count, 2)
+            self.assertEqual(get_logger.return_value.info.call_count, 3)
 
     @patch("llm_geo.tools.public_data_providers.requests.get")
     def test_nominatim_persists_returned_feature_collection(self, get: Mock) -> None:
@@ -163,26 +169,21 @@ class PublicProviderToolTests(unittest.TestCase):
                 "llm_geo.tools.public_data_providers.http_logging_enabled",
                 return_value=True,
             ), patch("llm_geo.tools.public_data_providers.get_logger") as get_logger:
-                result = from_toon(
-                    nominatim_to_geojson.invoke(
-                        {
-                            "query": "Magdeburg, Germany",
-                            "output_path": str(output_path),
-                            "description": "Magdeburg search result",
-                            "country_codes": "de",
-                        }
-                    )
+                result = nominatim_to_geojson(
+                    query="Magdeburg, Germany",
+                    output_path=str(output_path),
+                    description="Magdeburg search result",
+                    country_codes="de",
                 )
 
             collection = json.loads(output_path.read_text(encoding="utf-8"))
-            self.assertEqual(result["provider"], "nominatim")
-            self.assertEqual(result["request"]["endpoint"], configured_endpoint)
-            self.assertEqual(result["request"]["country_codes"], "de")
+            self.assertEqual(result.crs.to_epsg(), 4326)
+            self.assertEqual(len(result), 1)
             self.assertEqual(collection["type"], "FeatureCollection")
             self.assertEqual(len(collection["features"]), 1)
             self.assertEqual(get.call_args.args[0], configured_endpoint)
             self.assertEqual(get.call_args.kwargs["params"]["format"], "geojson")
-            self.assertEqual(get_logger.return_value.info.call_count, 2)
+            self.assertEqual(get_logger.return_value.info.call_count, 3)
 
 
 if __name__ == "__main__":

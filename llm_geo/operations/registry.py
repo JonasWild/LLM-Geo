@@ -17,6 +17,7 @@ class RegisteredOperation:
     name: str
     description: str
     inputs: tuple[tuple[str, str, str], ...]
+    defaults: dict[str, Any]
     output_type: str
     output_description: str
 
@@ -25,7 +26,13 @@ class RegisteredOperation:
             "id": self.id,
             "description": self.description,
             "inputs": [
-                {"name": name, "type": annotation, "description": description}
+                {
+                    "name": name,
+                    "type": annotation,
+                    "description": description,
+                    "required": name not in self.defaults,
+                    **({"default": self.defaults[name]} if name in self.defaults else {}),
+                }
                 for name, annotation, description in self.inputs
             ],
             "output": {
@@ -49,6 +56,7 @@ def code(function: Callable[..., object]) -> Callable[..., object]:
     documentation = inspect.getdoc(function) or ""
     summary, arguments, result = _parse_docstring(documentation)
     inputs: list[tuple[str, str, str]] = []
+    defaults: dict[str, Any] = {}
     for parameter in signature.parameters.values():
         if parameter.kind in {
             inspect.Parameter.VAR_POSITIONAL,
@@ -64,6 +72,8 @@ def code(function: Callable[..., object]) -> Callable[..., object]:
         inputs.append(
             (parameter.name, _type_name(annotation), arguments[parameter.name])
         )
+        if parameter.default is not inspect.Signature.empty:
+            defaults[parameter.name] = parameter.default
     operation_id = f"{function.__module__}.{function.__qualname__}"
     if operation_id in _OPERATIONS:
         raise ValueError(f"Duplicate @code operation ID: {operation_id}")
@@ -74,6 +84,7 @@ def code(function: Callable[..., object]) -> Callable[..., object]:
         name=function.__name__,
         description=summary,
         inputs=tuple(inputs),
+        defaults=defaults,
         output_type=_type_name(hints["return"]),
         output_description=result,
     )

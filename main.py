@@ -14,13 +14,12 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from langchain.chat_models import init_chat_model
-from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from llm_geo.middleware.logging import configure_logging, get_logger
 from llm_geo.operations import load_all_operations
 from llm_geo.subagents.supervisor import create_geo_agent, run_geo_agent
 from llm_geo.system import run_llm_geo
-from llm_geo.tools.public_data_providers import PUBLIC_RETRIEVAL_TOOLS
+from llm_geo.tools.public_data_providers import PUBLIC_RETRIEVAL_OPERATIONS
 
 if sys.platform == 'win32':
     import pip_system_certs.wrapt_requests
@@ -120,9 +119,6 @@ Suche in gegebenem AOI nach Städten und urbanen Gebiete und stelle diese als ne
 """
 
 TASK_NAME = "llm_geo_task"
-# Register provider tools here. Every tool must materialize GeoJSON in the run data
-# directory and follow llm_geo.tools.data_retrieval.provider_tool_instructions().
-RETRIEVAL_TOOLS: list[BaseTool] = PUBLIC_RETRIEVAL_TOOLS
 # Import every operations module so its @code functions populate the registry.
 REGISTERED_OPERATIONS = load_all_operations()
 
@@ -131,9 +127,6 @@ REGISTERED_OPERATIONS = load_all_operations()
 MODEL = os.getenv("LLM_GEO_MODEL", "gpt-5.4-mini").strip()
 MODEL_PROVIDER = os.getenv("LLM_GEO_MODEL_PROVIDER", "openai").strip() or None
 BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip() or None
-
-# Graph mode is more robust. Direct mode skips DAG and operation decomposition.
-DIRECT_MODE = _environment_bool("LLM_GEO_DIRECT_MODE", False)
 
 # Optional conversational supervisor around the complete LLM-GEO workflow.
 USE_DEEP_AGENT = _environment_bool("LLM_GEO_USE_DEEP_AGENT", False)
@@ -194,11 +187,9 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
         logger.info("Execution path | deep_agent=enabled")
         agent = create_geo_agent(
             model,
-            retrieval_tools=RETRIEVAL_TOOLS,
             registered_operations=REGISTERED_OPERATIONS,
             default_task_name=task_name,
             output_root=OUTPUT_ROOT,
-            direct_mode=DIRECT_MODE,
             allow_code_execution=ALLOW_CODE_EXECUTION,
             max_plan_attempts=MAX_PLAN_ATTEMPTS,
             max_execution_attempts=MAX_EXECUTION_ATTEMPTS,
@@ -214,10 +205,8 @@ def main(task: str = TASK, task_name: str = TASK_NAME) -> None:
             model=model,
             task=task,
             task_name=task_name,
-            retrieval_tools=RETRIEVAL_TOOLS,
             registered_operations=REGISTERED_OPERATIONS,
             output_root=OUTPUT_ROOT,
-            direct_mode=DIRECT_MODE,
             allow_code_execution=ALLOW_CODE_EXECUTION,
             max_plan_attempts=MAX_PLAN_ATTEMPTS,
             max_execution_attempts=MAX_EXECUTION_ATTEMPTS,

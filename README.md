@@ -33,7 +33,7 @@ OPENAI_BASE_URL=http://localhost:1234/v1
 ```
 
 The remaining durable runtime settings are documented in `.env.example`:
-`LLM_GEO_DIRECT_MODE`, `LLM_GEO_USE_DEEP_AGENT`,
+`LLM_GEO_USE_DEEP_AGENT`,
 `LLM_GEO_ALLOW_CODE_EXECUTION`, `LLM_GEO_OUTPUT_ROOT`, retry limits,
 `LLM_GEO_LOG_LEVEL`, `LLM_GEO_GENERATE_MERMAID`, and
 `LLM_GEO_SLOW_STEP_SECONDS`. Values already set in the shell take precedence over
@@ -71,11 +71,12 @@ Retrieval tool registration and trusted Python operation registration remain in
 Set `LLM_GEO_USE_DEEP_AGENT=true` to route the task through the conversational Deep
 Agents supervisor. The supervisor exposes the complete workflow as one
 `run_geospatial_analysis` tool and forwards the same output, execution, retry,
-and logging settings as the direct entry path. `LLM_GEO_DIRECT_MODE` independently
-controls graph decomposition inside that workflow.
+and logging settings as the direct entry path.
 
-`PUBLIC_RETRIEVAL_TOOLS` registers the built-in `overpass_to_geojson` and
-`nominatim_to_geojson` tools. Both write local GeoJSON FeatureCollections only.
+`PUBLIC_RETRIEVAL_OPERATIONS` registers the built-in `@code` operations
+`overpass_to_geojson` and `nominatim_to_geojson`. The planner places retrieval in the
+same DAG as every other operation. Both functions persist a GeoJSON FeatureCollection
+and return its features as an EPSG:4326 GeoDataFrame.
 For Nominatim, set an identifying user agent with contact information in `.env`:
 
 ```dotenv
@@ -188,8 +189,7 @@ The supported values are `auto` (LangChain's default selection), `tool` (an expl
 synthetic result tool), `provider` (provider-native JSON Schema), `json_mode`
 (`response_format=json_object` plus Pydantic validation), and `prompted` (schema
 instructions in the prompt plus manual JSON extraction and Pydantic validation).
-JSON and prompted modes run retrieval tools first and parse their results in a
-separate model call.
+JSON and prompted modes use the same structured planning response as other modes.
 
 The generator currently supports path, query, header, and JSON request inputs plus
 JSON `2xx` responses. Multipart bodies, binary responses, callbacks, and external
@@ -200,9 +200,8 @@ schema references are skipped rather than guessed.
 `llm_geo/system.py` is the execution center:
 
 ```text
-task + registered retrieval providers
-  → retrieve validated GeoJSON and inspect sources
-  → generate typed data/operation DAG
+task + registered operations
+  → generate one typed retrieval/analysis data-operation DAG
   → validate DAG; replan if invalid
   → generate and review operations
   → assemble and review program
@@ -212,16 +211,11 @@ task + registered retrieval providers
   → persist artifacts and checkpoints
 ```
 
-Every provider tool must materialize a GeoJSON FeatureCollection inside the current
-run's `data/` directory and return its local path, provider name, description, and
-request/provenance metadata as TOON. LLM-facing structured context and tool messages
-use TOON to reduce token usage; persisted GeoJSON, manifests, and workflow state remain
-JSON. The workflow rejects URLs, paths outside that directory, missing files, invalid
-TOON metadata, and non-FeatureCollection GeoJSON before planning. Provider credentials
-belong in environment variables and are never stored in source metadata or logs.
-
-Direct mode skips DAG decomposition; retains retrieval, inspection, review, execution,
-repair, and validation.
+Retrieval operations are ordinary trusted `@code` functions. Task values such as an
+Overpass query, output path, or result limit are stored in the operation node's
+`literal_arguments`; data edges bind the remaining function parameters. Retrieval
+operations may therefore start the DAG without an input data node. Provider
+credentials remain environment configuration.
 
 ## Navigation
 
@@ -233,7 +227,7 @@ llm_geo/
     runtime.py                  structured agent calls; code review
     supervisor.py               Deep Agents supervisor
   tools/
-    public_data_providers.py     Overpass/Nominatim GeoJSON retrieval tools
+    public_data_providers.py     Overpass/Nominatim @code retrieval operations
     data_inspection.py          table, vector, raster inspection
     workflow_graph.py           DAG validation; GraphML/PNG/HTML
     code_execution.py           subprocess execution; artifacts
@@ -269,12 +263,11 @@ output/<task_name>/<UTC timestamp>/
   <task_name>.checkpoints.sqlite
   <task_name>.state.json
   prompts/
-    001_retrieve_01.txt
-    002_plan_01.txt
-    003_code_<operation>_01.txt
-    004_review_<operation>_01.txt
+    001_plan_01.txt
+    002_code_<operation>_01.txt
+    003_review_<operation>_01.txt
     ...                           # only calls that actually occurred
-  data/                           retrieved GeoJSON inputs
+  data/                           reserved run data
   workflow/
     plan.json
     graph.graphml

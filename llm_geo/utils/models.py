@@ -18,10 +18,6 @@ class DataSource(BaseModel):
     inspection_error: str | None = None
 
 
-class RetrievalDecision(BaseModel):
-    selected_locations: list[str] = Field(min_length=1)
-
-
 class PlanNode(BaseModel):
     id: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     kind: Literal["data", "operation"]
@@ -29,11 +25,14 @@ class PlanNode(BaseModel):
     data_path: str = ""
     implementation: Literal["generated", "registered"] = "generated"
     registered_operation_id: str | None = None
+    literal_arguments: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_implementation_metadata(self) -> "PlanNode":
         if self.kind == "data" and (
-            self.implementation != "generated" or self.registered_operation_id
+            self.implementation != "generated"
+            or self.registered_operation_id
+            or self.literal_arguments
         ):
             raise ValueError(
                 "Data nodes cannot select an implementation or registered operation."
@@ -48,8 +47,8 @@ class PlanEdge(BaseModel):
 
 class WorkflowPlan(BaseModel):
     rationale: str
-    nodes: list[PlanNode] = Field(min_length=3)
-    edges: list[PlanEdge] = Field(min_length=2)
+    nodes: list[PlanNode] = Field(min_length=2)
+    edges: list[PlanEdge] = Field(min_length=1)
 
 
 class CodeArtifact(BaseModel):
@@ -83,9 +82,6 @@ class LLMGeoState(TypedDict, total=False):
     task: str
     task_name: str
     save_dir: str
-    data_sources: list[dict[str, Any]]
-    retrieval_error: str
-    direct_mode: bool
     allow_code_execution: bool
     max_plan_attempts: int
     max_execution_attempts: int
