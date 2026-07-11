@@ -53,11 +53,12 @@ from llm_geo.tools.workflow_graph import (
     operation_context,
     plan_to_graph,
     registered_operation_bridge,
+    render_main,
+    validate_operation_code,
     validate_workflow_plan,
     write_graph_artifacts,
 )
 from llm_geo.utils.models import (
-    AssemblyArtifact,
     CodeArtifact,
     CodeRepair,
     CodeReplacement,
@@ -183,14 +184,6 @@ def create_llm_geo_graph(
         "complete corrected code. " + GIS_RULES,
         ReviewDecision,
     )
-    assembler = create_structured_agent(
-        model,
-        "You write only imports and orchestration glue for already-reviewed GIS "
-        "functions. Keep every workflow call explicit inside a main() function so "
-        "the planned DAG remains visible. Never reproduce operation implementations. "
-        + GIS_RULES,
-        AssemblyArtifact,
-    )
     debugger = create_structured_agent(
         model,
         "Repair a Python program from its traceback or validation failures using "
@@ -305,60 +298,88 @@ def create_llm_geo_graph(
             if previous_plan and state.get("plan_issues")
             else ""
         )
-        prompt = (
-            "REGISTERED-FIRST POLICY:\n"
-            "- You MUST use a registered operation whenever its contract can perform "
-            "the required step.\n"
-            "- Generating an operation that duplicates or substantially overlaps a "
-            "registered operation is forbidden.\n"
-            "- Use implementation='generated' only when no registered operation can "
-            "satisfy the step.\n"
-            "- Every generated operation must provide generation_reason explaining "
-            "why none of the registered operations apply.\n"
-            "- Select operations by their short function ID exactly as shown in the "
-            "catalog; never invent or copy module paths.\n\n"
-            "TOP REGISTERED RELEVANT OPERATIONS:\n"
-            f"{to_toon([operation.catalog_entry() for idx, operation in enumerate(planner_operations)])}\n\n"
-            f"TASK:\n{state['task']}\n\n"
-            f"{previous_plan_section}PREVIOUS PLAN ISSUES TO CORRECT:\n"
-            f"{to_toon(state.get('plan_issues', []))}\n\n"
-            "Return the smallest task-complete DAG containing retrieval and the "
-            "requested output. Include transformation operations only when the "
-            "requested result actually requires transformation; retrieval output "
-            "may feed a final output operation or result directly. Each "
-            "edge must alternate data and operation. Retrieval must use matching "
-            "registered operations; their outputs are EPSG:4326 GeoDataFrames also "
-            "persisted as GeoJSON. Put task-derived scalar/configuration values in "
-            "the operation's literal_arguments. For registered operations, incoming "
-            "data edges bind in declared parameter order to parameters not supplied "
-            "as literals. Generated operations may also use literal_arguments for "
-            "task-known scalar/configuration values; these become explicit function "
-            "parameters and orchestration passes their values. Data nodes must "
-            "explicitly set implementation to 'generated', registered_operation_id "
-            "to null, and generation_reason to null. Only operation nodes select an "
-            "implementation: for a matching registered operation, set it to "
-            "'registered' and set registered_operation_id exactly to the catalog ID. "
-            "A registered retrieval operation may have no incoming data edge when "
-            "literal arguments and defaults satisfy its parameters. "
-            "\n\nDATA ORIGIN RULES:\n"
-            "- Every data node must be produced by exactly one preceding operation, "
-            "unless it represents an explicitly provided existing file and sets "
-            "data_path to that file.\n"
-            "- Start each external-data branch with a registered operation whose "
-            "category is 'retrieval'. Retrieval operations have no incoming data "
-            "edges; put queries, requests, locations, output paths, and other "
-            "task-known configuration in literal_arguments.\n"
-            "- Transformation operations may consume only data nodes produced "
-            "earlier in the DAG. Create one incoming edge for each dataset parameter.\n"
-            "- Values known directly from the task are literals for both registered "
-            "and generated operations. Values returned by "
-            "earlier operations are graph inputs. Never supply one parameter both "
-            "ways, and never represent scalar configuration as a data node.\n"
-            "- Example flow: retrieve_buildings -> buildings; retrieve_roads -> "
-            "roads; buildings + roads -> create_urban_layer -> urban_layer.\n\n"
-            "For a generated operation, use implementation 'generated', omit "
-            "registered_operation_id, and provide a specific generation_reason."
-        )
+        prompt = f"""
+You are the planner for a deterministically assembled executable DAG.
+
+The returned DAG is the complete program specification. No later LLM assembler
+will add operations, output handling, persistence, or external side effects.
+
+GOAL
+Return the smallest valid DAG that completes both:
+1. the user's requested task; and
+2. the system-required result-manifest contract below.
+
+EXECUTABLE GRAPH RULES
+- Edges must alternate data and operation nodes.
+- The graph must be acyclic and weakly connected.
+- Every operation must produce at least one output data node.
+- Every generated operation must consume at least one input data node.
+- Every non-source data node must have exactly one producing operation.
+- Every sink must be a data node.
+- Values produced earlier are passed through data edges.
+- Task-known scalar configuration belongs in literal_arguments.
+- Do not supply the same value through both an edge and literal_arguments.
+
+COMPLETE-BEHAVIOR RULE
+Every required action must be an explicit operation node, including:
+- retrieval;
+- transformation and analysis;
+- validation required by the task;
+- maps, charts, reports, and artifact persistence;
+- external writes;
+- result-manifest persistence.
+
+Do not assume that main() or another assembler will add behavior. main() is
+rendered mechanically from the nodes and edges.
+
+MANDATORY RESULT MANIFEST
+- Every plan must end with an explicit operation that writes
+  llm_geo_result.json in the current working directory.
+- Its output data node must have data_path="llm_geo_result.json".
+- The manifest operation must consume the user's final result or artifact through
+  an incoming data edge. Never create it as a disconnected root operation.
+- The manifest must record concrete task-completion evidence and artifact paths.
+- The manifest is mandatory system behavior and is not an unused or speculative
+  node, even when the user does not explicitly request JSON output.
+- Normally make the manifest data node the final sink.
+
+REGISTERED OPERATIONS
+- Use a registered operation whenever its contract covers the step.
+- Reference it by its exact short catalog ID.
+- Never generate a duplicate of a registered operation.
+- Generate only when no registered operation applies and provide a specific
+  generation_reason.
+
+REPAIRING A PREVIOUS PLAN
+- Preserve unaffected nodes and edges.
+- Never remove a mandatory node to resolve a validation issue.
+- If a generated operation has no input, connect it to the result it processes.
+- If the graph is disconnected, connect required output/finalization operations
+  to the task-result branch.
+
+NODE IMPLEMENTATION CONTRACT
+- Only operation nodes select an implementation or registered operation.
+- Data nodes must use implementation="generated".
+- Data nodes must set registered_operation_id=null, literal_arguments={{}}, and generation_reason=null.
+- Registered operations require implementation="registered", an exact catalog ID, and generation_reason=null.
+- Generated operations require implementation="generated", registered_operation_id=null, and a non-empty generation_reason.
+- literal_arguments belong only to operation nodes.
+
+REGISTERED OPERATIONS
+{to_toon([op.catalog_entry() for op in planner_operations])}
+
+{previous_plan_section}
+
+ISSUES TO FIX
+{to_toon(state.get("plan_issues", []))}
+
+TASK
+{state["task"]}
+
+Return only the DAG. Do not include behavior unrelated to the task or mandatory system contracts.
+The result-manifest operation is always required and is never considered unused.
+""".strip()
+
         prompt_path = save_prompt(
             state["save_dir"],
             stage="plan",
@@ -381,7 +402,12 @@ def create_llm_geo_graph(
 
     def validate_plan(state: LLMGeoState) -> dict[str, Any]:
         plan = WorkflowPlan.model_validate(state["plan"])
-        issues = validate_workflow_plan(plan, [], trusted_operations)
+        issues = validate_workflow_plan(
+            plan,
+            [],
+            trusted_operations,
+            require_result_manifest=True,
+        )
         if issues:
             get_logger().warning(
                 "Workflow plan rejected | issues=%d | %s",
@@ -433,6 +459,14 @@ def create_llm_geo_graph(
                 bridge_code = registered_operation_bridge(
                     plan, operation_id, registered
                 )
+                bridge_issues = validate_operation_code(
+                    bridge_code, contract, generated=False
+                )
+                if bridge_issues:
+                    raise RuntimeError(
+                        f"Registered-operation bridge {operation_id!r} violates its "
+                        f"executable contract: {'; '.join(bridge_issues)}"
+                    )
                 step = WorkflowStep(
                     node_id=operation_id,
                     description=contract["description"],
@@ -473,7 +507,18 @@ def create_llm_geo_graph(
                 artifact = ask_structured(coder, requirements)
             if not isinstance(artifact, CodeArtifact):
                 raise TypeError("Coder returned an unexpected response type")
-            reviewer_prompt = build_review_prompt(artifact.code, requirements)
+            implementation_issues = validate_operation_code(
+                artifact.code, contract, generated=True
+            )
+            review_requirements = requirements
+            if implementation_issues:
+                review_requirements += (
+                    "\n\nDETERMINISTIC IMPLEMENTATION ISSUES TO CORRECT:\n"
+                    + to_toon(implementation_issues)
+                )
+            reviewer_prompt = build_review_prompt(
+                artifact.code, review_requirements
+            )
             reviewer_prompt_path = save_prompt(
                 state["save_dir"],
                 stage="ops",
@@ -486,7 +531,18 @@ def create_llm_geo_graph(
                 "reviewer.call", slow_step_seconds, operation=operation_id
             ):
                 reviewed_code, review_issues = review_code(
-                    reviewer, artifact.code, requirements, prompt=reviewer_prompt
+                    reviewer,
+                    artifact.code,
+                    review_requirements,
+                    prompt=reviewer_prompt,
+                )
+            remaining_issues = validate_operation_code(
+                reviewed_code, contract, generated=True
+            )
+            if remaining_issues:
+                raise RuntimeError(
+                    f"Reviewed operation {operation_id!r} violates its executable "
+                    f"contract: {'; '.join(remaining_issues)}"
                 )
             get_logger().info(
                 "Operation reviewed | node=%s | issues=%d",
@@ -500,121 +556,32 @@ def create_llm_geo_graph(
                 outputs=contract["outputs"],
                 literal_arguments=contract["literal_arguments"],
                 code=reviewed_code,
-                review_issues=review_issues,
+                review_issues=[*implementation_issues, *review_issues],
             ).model_dump(mode="json")
             operations.append(step)
         get_logger().info("Operation generation complete | count=%d", len(operations))
         return {"operations": operations, "status": "operations_generated"}
 
     def assemble_program(state: LLMGeoState) -> dict[str, Any]:
-        get_logger().info("Assembling complete program")
+        get_logger().info("Assimilating complete program deterministically")
+        plan = WorkflowPlan.model_validate(state["plan"])
         function_code = [item["code"] for item in state["operations"]]
-        interfaces = [
-            {
-                key: value
-                for key, value in item.items()
-                if key in {
-                    "node_id",
-                    "description",
-                    "inputs",
-                    "outputs",
-                    "literal_arguments",
-                }
-            }
-            for item in state["operations"]
-        ]
-        requirements = f"""
-        TASK:
-        {state["task"]}
-
-        WORKFLOW PLAN:
-        {to_toon(state["plan"])}
-
-        REVIEWED FUNCTION INTERFACES:
-        {to_toon(interfaces)}
-
-        Return only additional imports and orchestration_code. The orchestration code
-        must define main() and call main() at the end. Inside main(), emit one explicit
-        function call per reviewed operation in dependency order. Bind each returned
-        value to its output data-node name and pass input data-node variables as
-        arguments. Before each call, add a short comment showing
-        `input data -> operation -> output data`. Keep workflow calls directly inside
-        main(): do not hide them in loops, comprehensions, nested functions, dispatch
-        dictionaries, or generic executors. Pass every interface's literal_arguments
-        as keyword arguments using exactly the supplied values. Do not reproduce any
-        reviewed function. Print important results. Save requested maps/charts and
-        write llm_geo_result.json in the current working directory, which is the run's
-        results directory. Do not use an if __name__ guard.
-        """
-        requirements = textwrap.dedent(requirements)
-        assembler_prompt_path = save_prompt(
-            state["save_dir"],
-            stage="assemble",
-            agent="assembler",
-            subject="program",
-            prompt=requirements,
-        )
-        get_logger().info("Assembler prompt saved | path=%s", assembler_prompt_path)
-        with timed_step("assembler.call", slow_step_seconds):
-            artifact = ask_structured(assembler, requirements)
-        if not isinstance(artifact, AssemblyArtifact):
-            raise TypeError("Assembler returned an unexpected response type")
-        raw_code = compose_program(
-            artifact.imports,
-            function_code,
-            artifact.orchestration_code,
-            validate=False,
-        )
-        raw_revision = save_code_revision(
-            Path(state["save_dir"]),
-            raw_code,
-            "assembler_raw",
-            parent_revision=state.get("current_revision"),
-            metadata={"notes": artifact.notes},
-        )
-        reviewer_requirements = (
-            requirements
-            + "\nThe reviewed code is orchestration glue only. Preserve this scope and "
-            "do not add or reproduce operation function implementations.\n"
-            f"AVAILABLE ADDITIONAL IMPORTS:\n{artifact.imports or '(none)'}"
-        )
-        reviewer_prompt = build_review_prompt(
-            artifact.orchestration_code, reviewer_requirements
-        )
-        reviewer_prompt_path = save_prompt(
-            state["save_dir"],
-            stage="assemble",
-            agent="reviewer",
-            subject="program",
-            prompt=reviewer_prompt,
-        )
-        get_logger().info("Reviewer prompt saved | path=%s", reviewer_prompt_path)
-        with timed_step("reviewer.call", slow_step_seconds, subject="assembly"):
-            reviewed_code, review_issues = review_code(
-                reviewer,
-                artifact.orchestration_code,
-                reviewer_requirements,
-                prompt=reviewer_prompt,
-            )
-        get_logger().info("Assembly reviewed | issues=%d", len(review_issues))
-        assembled_code = compose_program(
-            artifact.imports, function_code, reviewed_code
-        )
-        reviewed_revision = save_code_revision(
+        main_code = render_main(plan)
+        assembled_code = compose_program("", function_code, main_code)
+        revision = save_code_revision(
             Path(state["save_dir"]),
             assembled_code,
-            "assembler_reviewed",
-            parent_revision=raw_revision["revision"],
-            metadata={"review_issues": review_issues},
+            "deterministic_assembly",
+            parent_revision=state.get("current_revision"),
+            metadata={"operation_count": len(function_code)},
         )
         path = publish_solution(Path(state["save_dir"]), assembled_code)
-        get_logger().info("Program assembled and reviewed | path=%s", path)
+        get_logger().info("Program assimilated from validated DAG | path=%s", path)
         return {
             "assembled_code": assembled_code,
-            "code_revision": reviewed_revision["revision"],
-            "current_revision": reviewed_revision["revision"],
-            "code_revisions": state.get("code_revisions", [])
-            + [raw_revision, reviewed_revision],
+            "code_revision": revision["revision"],
+            "current_revision": revision["revision"],
+            "code_revisions": state.get("code_revisions", []) + [revision],
             "artifacts": state.get("artifacts", []) + [str(path)],
             "status": "program_assembled",
         }

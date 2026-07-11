@@ -232,8 +232,8 @@ schema references are skipped rather than guessed.
 task + registered operations
   → generate one typed retrieval/analysis data-operation DAG
   → validate DAG; replan if invalid
-  → generate and review operations
-  → assemble and review program
+  → generate, deterministically check, and review atomic operations
+  → render main() and assimilate the executable program from the DAG
   → execute in subprocess
   → repair from traceback; retry
   → validate manifest and semantics
@@ -244,7 +244,14 @@ Retrieval operations are ordinary trusted `@code` functions. Task values such as
 Overpass query, output path, or result limit are stored in the operation node's
 `literal_arguments`; data edges bind the remaining function parameters. Retrieval
 operations may therefore start the DAG without an input data node. Provider
-credentials remain environment configuration.
+credentials remain environment configuration. Registered operations are represented
+by standalone functions just like generated operations.
+
+The validated DAG is the complete executable specification. Required retrievals,
+transformations, external writes, artifact creation, and result-manifest persistence
+are explicit operation nodes. `main()` is rendered deterministically from their edges;
+there is no LLM assembly step. Generated operation functions are syntax- and
+interface-checked independently before they enter the program.
 
 ## Navigation
 
@@ -310,9 +317,8 @@ output/<task_name>/<UTC timestamp>/
     solution.py                    # latest candidate; validated solution on success
     revisions.jsonl                # chronological code-revision metadata
     revisions/
-      001_assembler_raw.py
-      002_assembler_reviewed.py
-      003_debugger.py              # repairs are never overwritten
+      001_deterministic_assembly.py
+      002_debugger.py              # repairs are never overwritten
       ...
     executions/
       attempt_001.py               # exact source submitted to the subprocess

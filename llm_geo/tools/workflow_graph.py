@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
@@ -28,6 +29,8 @@ def validate_workflow_plan(
     plan: WorkflowPlan,
     sources: list[DataSource],
     registered_operations: Sequence["RegisteredOperation"] = (),
+    *,
+    require_result_manifest: bool = False,
 ) -> list[str]:
     issues: list[str] = []
     node_ids = [node.id for node in plan.nodes]
@@ -98,6 +101,24 @@ def validate_workflow_plan(
     sinks = [node for node in plan.nodes if graph.out_degree(node.id) == 0]
     if not sinks or any(node.kind != "data" for node in sinks):
         issues.append("Every workflow sink must be a data/result node.")
+    if require_result_manifest:
+        manifests = [
+            node
+            for node in plan.nodes
+            if node.kind == "data"
+            and Path(node.data_path).name == "llm_geo_result.json"
+        ]
+        if not manifests:
+            issues.append(
+                "The executable workflow must include an operation that writes "
+                "llm_geo_result.json and an output data node whose data_path names "
+                "that manifest."
+            )
+        elif any(graph.in_degree(node.id) != 1 for node in manifests):
+            issues.append(
+                "Every llm_geo_result.json data node must be produced by exactly "
+                "one explicit operation."
+            )
     planned_paths = {node.data_path for node in plan.nodes if node.data_path}
     for source in sources:
         if source.location not in planned_paths:
@@ -309,6 +330,141 @@ def operation_context(plan: WorkflowPlan, operation_id: str) -> dict[str, Any]:
             operation_contract(plan, node_id) for node_id in successor_ids
         ],
     }
+
+
+def validate_operation_code(
+    code: str,
+    contract: dict[str, Any],
+    *,
+    generated: bool = True,
+) -> list[str]:
+    """Validate one operation as an isolated, import-safe Python function."""
+    try:
+        module = ast.parse(code)
+    except SyntaxError as error:
+        return [f"Operation code is not valid Python: {error.msg} at line {error.lineno}."]
+
+    operation_id = str(contract["node_id"])
+    functions = [
+        statement
+        for statement in module.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and statement.name == operation_id
+    ]
+    issues: list[str] = []
+    if len(functions) != 1:
+        issues.append(
+            f"Code must define operation function {operation_id!r} exactly once."
+        )
+        return issues
+    function = functions[0]
+    if isinstance(function, ast.AsyncFunctionDef):
+        issues.append("Operation functions must be synchronous.")
+
+    expected_parameters = [
+        *contract.get("inputs", []),
+        *contract.get("literal_arguments", {}),
+    ]
+    actual_parameters = [
+        argument.arg for argument in [*function.args.posonlyargs, *function.args.args]
+    ]
+    if (
+        actual_parameters != expected_parameters
+        or function.args.vararg is not None
+        or function.args.kwarg is not None
+        or function.args.kwonlyargs
+    ):
+        issues.append(
+            f"Function parameters must be exactly {expected_parameters}, found "
+            f"{actual_parameters}."
+        )
+
+    if generated:
+        unexpected_top_level = [
+            type(statement).__name__
+            for statement in module.body
+            if statement is not function
+            and not isinstance(statement, (ast.Import, ast.ImportFrom))
+        ]
+        if unexpected_top_level:
+            issues.append(
+                "Generated operation modules may contain only imports and the "
+                f"operation function; found {unexpected_top_level}."
+            )
+        returns = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Return)
+        ]
+        if not returns:
+            issues.append("Generated operation must contain a return statement.")
+        expected_outputs = list(contract.get("outputs", []))
+        final_statement = function.body[-1] if function.body else None
+        returned_names: list[str] = []
+        if isinstance(final_statement, ast.Return):
+            if isinstance(final_statement.value, ast.Name):
+                returned_names = [final_statement.value.id]
+            elif isinstance(final_statement.value, (ast.Tuple, ast.List)):
+                returned_names = [
+                    element.id
+                    for element in final_statement.value.elts
+                    if isinstance(element, ast.Name)
+                ]
+        if returned_names != expected_outputs:
+            issues.append(
+                "Function must end by returning output variables exactly in graph "
+                f"order {expected_outputs}, found {returned_names}."
+            )
+    return issues
+
+
+def render_main(plan: WorkflowPlan) -> str:
+    """Render explicit deterministic execution of every operation in the plan."""
+    graph = plan_to_graph(plan)
+    node_map = {node.id: node for node in plan.nodes}
+    source_data = [
+        node
+        for node in plan.nodes
+        if node.kind == "data" and graph.in_degree(node.id) == 0
+    ]
+    lines: list[str] = []
+    if source_data:
+        lines.extend(["import geopandas as gpd", ""])
+    lines.append("def main():")
+    for node in source_data:
+        lines.append(f"    # existing source -> {node.id}")
+        lines.append(f"    {node.id} = gpd.read_file({node.data_path!r})")
+        lines.append("")
+
+    for node_id in nx.topological_sort(graph):
+        if node_map[node_id].kind != "operation":
+            continue
+        contract = operation_contract(plan, node_id)
+        inputs = list(contract["inputs"])
+        outputs = list(contract["outputs"])
+        literals = dict(contract["literal_arguments"])
+        display_inputs = ", ".join(inputs) or "()"
+        display_outputs = ", ".join(outputs)
+        lines.append(
+            f"    # {display_inputs} -> {node_id} -> {display_outputs}"
+        )
+        arguments = [*inputs, *(f"{key}={value!r}" for key, value in literals.items())]
+        call = f"{node_id}({', '.join(arguments)})"
+        assignment = ", ".join(outputs)
+        lines.append(f"    {assignment} = {call}")
+        lines.append("")
+
+    sinks = [
+        node.id
+        for node in plan.nodes
+        if node.kind == "data" and graph.out_degree(node.id) == 0
+    ]
+    if len(sinks) == 1:
+        lines.append(f"    return {sinks[0]}")
+    else:
+        lines.append(f"    return {', '.join(sinks)}")
+    lines.extend(["", "", "main()", ""])
+    return "\n".join(lines)
 
 
 def registered_operation_bridge(
