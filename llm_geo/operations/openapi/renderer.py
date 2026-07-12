@@ -40,6 +40,8 @@ def render_operation(
     api_key_environment: str | None,
     auth_header: str,
     auth_scheme: str,
+    kind: str,
+    returns_geojson: bool,
 ) -> str:
     """Render one definition as a module-level decorated function."""
     signature = ",\n".join(
@@ -54,8 +56,13 @@ def render_operation(
             f"        {parameter.python_name}: {parameter.description}"
             for parameter in definition.parameters
         )
+    return_annotation = definition.return_annotation
+    return_description = definition.return_description
+    if returns_geojson:
+        return_annotation = "GeoDataFrame"
+        return_description = f'GeoDataFrame with provenance metadata in `.attrs["provenance"]` ({return_description})'
     doc_lines.extend(
-        ["", "    Returns:", f"        {definition.return_description}", '    """']
+        ["", "    Returns:", f"        {return_description}", '    """']
     )
     body: list[str] = []
     grouped = {
@@ -82,7 +89,7 @@ def render_operation(
             body.extend(_mapping_lines("json_body", body_parameters))
             body_argument = "json_body"
     call_lines = [
-        "    return invoke_json(",
+        "    payload = invoke_json(" if returns_geojson else "    return invoke_json(",
         f"        service={service!r},",
         f"        method={definition.method!r},",
         f"        path={definition.path!r},",
@@ -106,11 +113,14 @@ def render_operation(
             "    )",
         ]
     )
+    if returns_geojson:
+        source = f"{service} {definition.method} {definition.path}"
+        call_lines.append(f"    return geojson_to_geodataframe(payload, source={source!r})")
     rendered_body = "\n".join(body + call_lines)
     return "\n".join(
         [
-            "@code",
-            f"def {definition.function_name}({signature}) -> {definition.return_annotation}:",
+            f"@code(kind={kind!r})",
+            f"def {definition.function_name}({signature}) -> {return_annotation}:",
             *doc_lines,
             rendered_body,
         ]
@@ -122,11 +132,19 @@ def render_module(
     *,
     service: str,
     default_base_url: str,
+    kinds: dict[str, str],
+    returns_geojson: dict[str, bool] | None = None,
     api_key_environment: str | None = None,
     auth_header: str = "Authorization",
     auth_scheme: str = "Bearer",
 ) -> str:
-    """Render a complete importable generated operations module."""
+    """Render a complete importable generated operations module.
+
+    `kinds` and `returns_geojson` map each definition's `function_name` to its classified
+    `@code` kind and whether its response should be converted to a GeoDataFrame (see
+    `llm_geo.operations.openapi.classify.classify_operations`).
+    """
+    returns_geojson = returns_geojson or {}
     wrappers = "\n\n\n".join(
         render_operation(
             definition,
@@ -135,13 +153,24 @@ def render_module(
             api_key_environment=api_key_environment,
             auth_header=auth_header,
             auth_scheme=auth_scheme,
+            kind=kinds[definition.function_name],
+            returns_geojson=returns_geojson.get(definition.function_name, False),
         )
         for definition in definitions
+    )
+    needs_geo_imports = any(
+        returns_geojson.get(definition.function_name, False) for definition in definitions
+    )
+    geo_imports = (
+        "from geopandas import GeoDataFrame\n"
+        "from llm_geo.operations.openapi.runtime import geojson_to_geodataframe\n"
+        if needs_geo_imports else ""
     )
     return (
         '"""Generated trusted operations. Do not edit by hand."""\n\n'
         "from __future__ import annotations\n\n"
         "from typing import Any\n\n"
+        f"{geo_imports}"
         "from llm_geo.operations import code\n"
         "from llm_geo.operations.openapi.runtime import invoke_json\n\n\n"
         f"{wrappers}\n"

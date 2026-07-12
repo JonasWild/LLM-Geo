@@ -1,9 +1,9 @@
-.venv/
-__pycache__/
-.llm_geo/
-*.py[cod]
 .env
-.idea/
-output/
-.vscode/
-.deepeval/
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+.pytest_cache/
+traces/
+reports/
