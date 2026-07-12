@@ -3,14 +3,13 @@ contract test (run against synthetic inputs, no upstream nodes involved) passes.
 """
 from __future__ import annotations
 
-from deepagents import create_deep_agent
-from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import tool
 
 from .contracts import run_contract
 from .llm import retry_on_rate_limit
 from .models import NodeImplementation, NodeSpec
+from .structured_output import run_structured_agent
 
 SYSTEM_PROMPT = """You implement one DAG node as a single python function:
 
@@ -59,22 +58,13 @@ def implement_node(node: NodeSpec, model: BaseChatModel, max_attempts: int = 3) 
         id=node.id, kind=node.kind.value, description=node.description,
         inputs=node.inputs, outputs=node.outputs, params=node.params,
     )
-    # ProviderStrategy forces the model's native JSON-schema response format for the final
-    # NodeImplementation instead of deepagents' default AutoStrategy, which silently falls back to a
-    # tool-calling strategy for any model name it doesn't recognize (e.g. a custom OPENAI_MODEL
-    # served through a custom OPENAI_BASE_URL). The contract_test tool above is unaffected -- it's a
-    # real tool the agent calls mid-reasoning, not part of the structured-output mechanism.
-    agent = create_deep_agent(
-        model=model,
-        tools=[_contract_tool(node)],
-        system_prompt=system_prompt,
-        response_format=ProviderStrategy(NodeImplementation),
-    )
-    invoke = retry_on_rate_limit(agent.invoke)
+    tools = [_contract_tool(node)]
+    invoke = retry_on_rate_limit(run_structured_agent)
     feedback, impl = "", None
     for attempt in range(1, max_attempts + 1):
-        result = invoke({"messages": [{"role": "user", "content": f"Implement node '{node.id}'.{feedback}"}]})
-        impl = result["structured_response"]
+        impl, _ = invoke(
+            model, system_prompt, f"Implement node '{node.id}'.{feedback}", NodeImplementation, tools=tools
+        )
         check = run_contract(node, impl.code)
         if check.ok:
             return impl, attempt

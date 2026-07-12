@@ -108,6 +108,7 @@ else in the type system. Classification only runs when a service's spec actually
 | `llm_geo/tools/public_data_providers.py` | the actual trusted operations (`@code`-decorated), incl. live OSM (Nominatim/Overpass) calls |
 | `llm_geo/models.py` | shared pydantic models: NodeSpec, DAGSpec, NodeImplementation, ExecutionResult, RunReport |
 | `llm_geo/llm.py` | `ChatOpenAI`/`OpenAIEmbeddings` factories (model/base URL/API key configurable via env, see `.env.example`), rate-limit retry, deepagents harness profile (strips unused filesystem/shell tools) |
+| `llm_geo/structured_output.py` | selectable structured-output strategy (`LLM_STRUCTURED_OUTPUT_MODE`: `provider` native JSON-schema, or `json_object` classic JSON mode + local Pydantic validation), shared by planner/coder/classify -- never tool-calling |
 | `llm_geo/trace.py` | `Tracer`: JSONL event log to `traces/run.jsonl` + telegraphic stdout logging |
 | `llm_geo/report.py` | `RunReport` -> Mermaid solution/execution graphs + Markdown report |
 | `llm_geo/cli.py` | `python -m llm_geo.cli "<task>"` single-task entrypoint |
@@ -130,6 +131,14 @@ Env vars (see `.env.example`): `OPENAI_API_KEY` (required), `OPENAI_MODEL` (opti
 `OPENAI_EMBEDDING_MODEL` (optional, default `text-embedding-3-small`), and
 `OPENAI_EMBEDDING_API_KEY`/`OPENAI_EMBEDDING_BASE_URL` (optional, override the shared LLM
 key/base URL for embeddings specifically).
+
+`LLM_STRUCTURED_OUTPUT_MODE` (optional, default `json_object`) selects how planner/coder/classify
+get structured output from the model, never via tool-calling: `json_object` runs any agent tool
+calls first, then a separate completion pinned to the classic JSON-object response format,
+validated locally with Pydantic -- the broadly-compatible choice for endpoints that don't support
+OpenAI's stricter Structured Outputs API (e.g. nemotron-ultra). `provider` forces that stricter
+native JSON-schema response format instead (langchain's `ProviderStrategy`), for endpoints that
+support it.
 
 ## Key invariants for editing this code
 

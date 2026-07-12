@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from llm_geo.llm import get_model, retry_on_rate_limit
 from llm_geo.operations.openapi.models import OpenAPIDefinition
+from llm_geo.structured_output import complete_json_object, structured_output_mode
 
 _CHUNK_SIZE = 25
 
@@ -65,14 +66,19 @@ def _classify_chunk(
     chunk: tuple[OpenAPIDefinition, ...], model: BaseChatModel
 ) -> dict[str, OperationClassification]:
     listing = "\n".join(_describe(definition) for definition in chunk)
-    # method="json_schema" pins the model's native structured-output response format (as opposed to
-    # "function_calling", which round-trips the schema through a synthetic tool call).
-    structured_model = model.with_structured_output(_ClassificationBatch, method="json_schema")
-    invoke = retry_on_rate_limit(structured_model.invoke)
-    result = invoke([
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": f"Classify these {len(chunk)} operations:\n\n{listing}"},
-    ])
+    user_content = f"Classify these {len(chunk)} operations:\n\n{listing}"
+    if structured_output_mode() == "provider":
+        # method="json_schema" pins the model's native structured-output response format (as opposed
+        # to "function_calling", which round-trips the schema through a synthetic tool call).
+        structured_model = model.with_structured_output(_ClassificationBatch, method="json_schema")
+        invoke = retry_on_rate_limit(structured_model.invoke)
+        result = invoke([
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ])
+    else:
+        invoke = retry_on_rate_limit(complete_json_object)
+        result = invoke(model, _SYSTEM_PROMPT, user_content, _ClassificationBatch)
     by_name = {item.function_name: item for item in result.operations}
     missing = [d.function_name for d in chunk if d.function_name not in by_name]
     if missing:

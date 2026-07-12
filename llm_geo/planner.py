@@ -1,13 +1,12 @@
 """Single-step planning: task -> validated DAGSpec, via a deep agent with structured output."""
 from __future__ import annotations
 
-from deepagents import create_deep_agent
-from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from .llm import retry_on_rate_limit
 from .models import DAGSpec
 from .registry import catalog_text
+from .structured_output import run_structured_agent
 
 SYSTEM_PROMPT = """You are a geospatial analysis planner. Given a user task, produce the COMPLETE \
 workflow as a single DAG in one shot -- do not ask questions, do not explore, just plan.
@@ -31,11 +30,5 @@ Trusted registry:
 
 @retry_on_rate_limit
 def plan(task: str, model: BaseChatModel) -> DAGSpec:
-    # ProviderStrategy forces the model's native JSON-schema response format instead of deepagents'
-    # default AutoStrategy, which silently falls back to a tool-calling strategy for any model name
-    # it doesn't recognize (e.g. a custom OPENAI_MODEL served through a custom OPENAI_BASE_URL).
-    agent = create_deep_agent(
-        model=model, system_prompt=SYSTEM_PROMPT, response_format=ProviderStrategy(DAGSpec)
-    )
-    result = agent.invoke({"messages": [{"role": "user", "content": task}]})
-    return result["structured_response"]
+    dag, _ = run_structured_agent(model, SYSTEM_PROMPT, task, DAGSpec)
+    return dag
