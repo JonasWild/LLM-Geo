@@ -4,6 +4,7 @@ contract test (run against synthetic inputs, no upstream nodes involved) passes.
 from __future__ import annotations
 
 from deepagents import create_deep_agent
+from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import tool
 
@@ -58,8 +59,16 @@ def implement_node(node: NodeSpec, model: BaseChatModel, max_attempts: int = 3) 
         id=node.id, kind=node.kind.value, description=node.description,
         inputs=node.inputs, outputs=node.outputs, params=node.params,
     )
+    # ProviderStrategy forces the model's native JSON-schema response format for the final
+    # NodeImplementation instead of deepagents' default AutoStrategy, which silently falls back to a
+    # tool-calling strategy for any model name it doesn't recognize (e.g. a custom OPENAI_MODEL
+    # served through a custom OPENAI_BASE_URL). The contract_test tool above is unaffected -- it's a
+    # real tool the agent calls mid-reasoning, not part of the structured-output mechanism.
     agent = create_deep_agent(
-        model=model, tools=[_contract_tool(node)], system_prompt=system_prompt, response_format=NodeImplementation
+        model=model,
+        tools=[_contract_tool(node)],
+        system_prompt=system_prompt,
+        response_format=ProviderStrategy(NodeImplementation),
     )
     invoke = retry_on_rate_limit(agent.invoke)
     feedback, impl = "", None

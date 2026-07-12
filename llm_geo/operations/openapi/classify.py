@@ -65,7 +65,10 @@ def _classify_chunk(
     chunk: tuple[OpenAPIDefinition, ...], model: BaseChatModel
 ) -> dict[str, OperationClassification]:
     listing = "\n".join(_describe(definition) for definition in chunk)
-    invoke = retry_on_rate_limit(model.with_structured_output(_ClassificationBatch).invoke)
+    # method="json_schema" pins the model's native structured-output response format (as opposed to
+    # "function_calling", which round-trips the schema through a synthetic tool call).
+    structured_model = model.with_structured_output(_ClassificationBatch, method="json_schema")
+    invoke = retry_on_rate_limit(structured_model.invoke)
     result = invoke([
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": f"Classify these {len(chunk)} operations:\n\n{listing}"},

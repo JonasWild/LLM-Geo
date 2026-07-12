@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from deepagents import create_deep_agent
+from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from .llm import retry_on_rate_limit
@@ -30,6 +31,11 @@ Trusted registry:
 
 @retry_on_rate_limit
 def plan(task: str, model: BaseChatModel) -> DAGSpec:
-    agent = create_deep_agent(model=model, system_prompt=SYSTEM_PROMPT, response_format=DAGSpec)
+    # ProviderStrategy forces the model's native JSON-schema response format instead of deepagents'
+    # default AutoStrategy, which silently falls back to a tool-calling strategy for any model name
+    # it doesn't recognize (e.g. a custom OPENAI_MODEL served through a custom OPENAI_BASE_URL).
+    agent = create_deep_agent(
+        model=model, system_prompt=SYSTEM_PROMPT, response_format=ProviderStrategy(DAGSpec)
+    )
     result = agent.invoke({"messages": [{"role": "user", "content": task}]})
     return result["structured_response"]

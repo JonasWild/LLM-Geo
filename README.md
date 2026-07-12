@@ -107,7 +107,7 @@ else in the type system. Classification only runs when a service's spec actually
 | `llm_geo/operations/registry.py` | ground truth: `@code` decorator + `RegisteredOperation` registration mechanism |
 | `llm_geo/tools/public_data_providers.py` | the actual trusted operations (`@code`-decorated), incl. live OSM (Nominatim/Overpass) calls |
 | `llm_geo/models.py` | shared pydantic models: NodeSpec, DAGSpec, NodeImplementation, ExecutionResult, RunReport |
-| `llm_geo/llm.py` | `ChatOpenAI` factory (`OPENAI_MODEL` env, default `gpt-4o-mini`), rate-limit retry, deepagents harness profile (strips unused filesystem/shell tools) |
+| `llm_geo/llm.py` | `ChatOpenAI`/`OpenAIEmbeddings` factories (model/base URL/API key configurable via env, see `.env.example`), rate-limit retry, deepagents harness profile (strips unused filesystem/shell tools) |
 | `llm_geo/trace.py` | `Tracer`: JSONL event log to `traces/run.jsonl` + telegraphic stdout logging |
 | `llm_geo/report.py` | `RunReport` -> Mermaid solution/execution graphs + Markdown report |
 | `llm_geo/cli.py` | `python -m llm_geo.cli "<task>"` single-task entrypoint |
@@ -119,13 +119,17 @@ else in the type system. Classification only runs when a service's spec actually
 
 ```
 poetry install
-echo OPENAI_API_KEY=sk-... > .env      # required
+cp .env.example .env                    # fill in OPENAI_API_KEY at minimum
 python -m llm_geo.cli "Buffer sample points by 100m and summarize."
 python main.py                          # full test-case suite -> reports/run_*.md
 pytest                                   # offline unit tests, no API key needed
 ```
 
-Env vars: `OPENAI_API_KEY` (required), `OPENAI_MODEL` (optional, default `gpt-4o-mini`).
+Env vars (see `.env.example`): `OPENAI_API_KEY` (required), `OPENAI_MODEL` (optional, default
+`gpt-4o-mini`), `OPENAI_BASE_URL` (optional, point at a custom OpenAI-compatible endpoint),
+`OPENAI_EMBEDDING_MODEL` (optional, default `text-embedding-3-small`), and
+`OPENAI_EMBEDDING_API_KEY`/`OPENAI_EMBEDDING_BASE_URL` (optional, override the shared LLM
+key/base URL for embeddings specifically).
 
 ## Key invariants for editing this code
 
