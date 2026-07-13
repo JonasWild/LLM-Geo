@@ -71,14 +71,15 @@ def invoke_json(
     if api_key:
         headers[auth_header] = f"{auth_scheme} {api_key}".strip()
     try:
-        response = _session(service).request(
-            method=method,
-            url=f"{base_url}{rendered_path}",
-            params={
+        params = {
                 name: value
                 for name, value in (query_parameters or {}).items()
                 if value is not None
-            },
+            }
+        response = _session(service).request(
+            method=method,
+            url=f"{base_url}{rendered_path}",
+            params=params,
             headers=headers,
             json=json_body,
             timeout=timeout,
@@ -86,7 +87,7 @@ def invoke_json(
         response.raise_for_status()
     except requests.RequestException as error:
         raise OpenAPIOperationError(
-            f"{service} {method.upper()} {path} failed: {error}"
+            f"{service} {method.upper()} {path} failed: {error}.\nParams: {params}\nBody: {json_body}"
         ) from error
     try:
         return response.json()

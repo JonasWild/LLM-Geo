@@ -87,7 +87,7 @@ def code(
             if parameter.name not in arguments:
                 raise TypeError(f"Docstring Args section is missing {parameter.name!r}")
             inputs.append(
-                (parameter.name, _type_name(annotation), arguments[parameter.name])
+                (parameter.name, str(annotation).replace("typing.", ""), arguments[parameter.name])
             )
             if parameter.default is not inspect.Signature.empty:
                 defaults[parameter.name] = parameter.default
@@ -109,7 +109,7 @@ def code(
             description=summary,
             inputs=tuple(inputs),
             defaults=defaults,
-            output_type=_type_name(hints["return"]),
+            output_type=str(hints["return"]),
             output_description=result
         )
         facade = sys.modules.get("llm_geo.ops")
@@ -157,7 +157,3 @@ def _parse_docstring(documentation: str) -> tuple[str, dict[str, str], str]:
     if not result:
         raise TypeError("@code docstrings require a Returns description")
     return summary, arguments, result
-
-
-def _type_name(annotation: object) -> str:
-    return getattr(annotation, "__name__", str(annotation).replace("typing.", ""))

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .operations import load_all_operations
 from .operations.registry import RegisteredOperation, registered_operations
-from .tools import public_data_providers  # noqa: F401  (side effect: registers @code operations)
 
 _OUTPUT_NAME_BY_TYPE = {"GeoDataFrame": "features", "dict": "report"}
 
@@ -33,6 +33,7 @@ def _adapt(operation: RegisteredOperation) -> dict[str, Any]:
     }
 
 
+load_all_operations()
 REGISTRY: dict[str, dict[str, Any]] = {op.id: _adapt(op) for op in registered_operations()}
 
 

@@ -9,7 +9,7 @@ from .models import DAGSpec
 from .registry import catalog_text
 from .structured_output import run_structured_agent
 
-SYSTEM_PROMPT = """You are a geospatial analysis planner. Given a user task, produce the COMPLETE \
+SYSTEM_PROMPT = ("""You are a geospatial analysis planner. Given a user task, produce the COMPLETE \
 workflow as a single DAG in one shot -- do not ask questions, do not explore, just plan.
 
 Rules:
@@ -26,7 +26,10 @@ of these, set `registry_id` to that id and make the node's inputs/outputs match 
 Otherwise leave `registry_id` null and a coding agent will implement it from your description.
 
 Trusted registry:
-""" + catalog_text() + "\n\nReturn only the final DAGSpec."
+""" + catalog_text()
++ """\n\nYou will always try to first find a possible node from the trusted registry!
+\n\nReturn only the final DAGSpec.
+""")
 
 
 @retry_on_rate_limit
