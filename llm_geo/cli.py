@@ -16,6 +16,7 @@ def main() -> None:
     print("\nSUCCESS" if result.success else f"\nFAILED: {result.error}")
     for node_id, output in result.outputs.items():
         print(f"- {node_id}: {list(output.keys())}")
+    print(f"\nDebug bundle (prompts, code attempts, errors, full report): {report.artifacts_dir}")
 
 
 if __name__ == "__main__":

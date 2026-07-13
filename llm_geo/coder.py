@@ -6,6 +6,7 @@ from __future__ import annotations
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import tool
 
+from .artifacts import RunArtifacts, transcript_markdown
 from .contracts import run_contract
 from .llm import retry_on_rate_limit
 from .models import NodeImplementation, NodeSpec
@@ -52,21 +53,37 @@ def _contract_tool(node: NodeSpec):
     return contract_test
 
 
-def implement_node(node: NodeSpec, model: BaseChatModel, max_attempts: int = 3) -> tuple[NodeImplementation, int]:
-    """Returns the implementation plus how many contract-test rounds it took to (attempt to) pass."""
+def implement_node(
+    node: NodeSpec, model: BaseChatModel, max_attempts: int = 3, artifacts: RunArtifacts | None = None
+) -> tuple[NodeImplementation, int]:
+    """Returns the implementation plus how many contract-test rounds it took to (attempt to) pass.
+
+    When `artifacts` is given, every attempt's code, prompt, contract result and agent transcript is
+    written into the run's debug bundle under nodes/<node_id>/round_RR/attempt_AA/.
+    """
     system_prompt = SYSTEM_PROMPT.format(
         id=node.id, kind=node.kind.value, description=node.description,
         inputs=node.inputs, outputs=node.outputs, params=node.params,
     )
+    round_no = artifacts.begin_node_round(node, system_prompt) if artifacts else 0
     tools = [_contract_tool(node)]
     invoke = retry_on_rate_limit(run_structured_agent)
     feedback, impl = "", None
     for attempt in range(1, max_attempts + 1):
-        impl, _ = invoke(
-            model, system_prompt, f"Implement node '{node.id}'.{feedback}", NodeImplementation, tools=tools
-        )
+        user_prompt = f"Implement node '{node.id}'.{feedback}"
+        impl, transcript = invoke(model, system_prompt, user_prompt, NodeImplementation, tools=tools)
         check = run_contract(node, impl.code)
+        if artifacts:
+            artifacts.save_coder_attempt(
+                node.id, round_no, attempt, code=impl.code, user_prompt=user_prompt,
+                ok=check.ok, error=check.error, notes=impl.notes,
+                transcript_md=transcript_markdown(transcript),
+            )
         if check.ok:
+            if artifacts:
+                artifacts.save_node_result(node.id, round_no, impl.code, True, attempt)
             return impl, attempt
         feedback = f"\n\nYour last code:\n{impl.code}\n\nStill failing contract test:\n{check.error}\nFix it."
+    if artifacts:
+        artifacts.save_node_result(node.id, round_no, impl.code, False, max_attempts)
     return impl, max_attempts

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from .artifacts import RunArtifacts
 from .llm import retry_on_rate_limit
 from .models import DAGSpec
 from .registry import catalog_text
@@ -29,6 +30,8 @@ Trusted registry:
 
 
 @retry_on_rate_limit
-def plan(task: str, model: BaseChatModel) -> DAGSpec:
+def plan(task: str, model: BaseChatModel, artifacts: RunArtifacts | None = None) -> DAGSpec:
+    if artifacts:
+        artifacts.save_planner_prompts(SYSTEM_PROMPT, task)
     dag, _ = run_structured_agent(model, SYSTEM_PROMPT, task, DAGSpec)
     return dag

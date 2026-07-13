@@ -54,6 +54,9 @@ class ExecutionResult(BaseModel):
     outputs: dict[str, dict] = Field(default_factory=dict)
     failing_node_ids: list[str] = Field(default_factory=list)
     error: str | None = None
+    error_traceback: str | None = Field(
+        default=None, description="full python traceback of the failing node, when the failure raised"
+    )
     node_order: list[str] = Field(default_factory=list, description="nodes in the order they executed")
     node_status: dict[str, str] = Field(default_factory=dict, description="node id -> 'ok'|'error'")
     node_duration_ms: dict[str, float] = Field(default_factory=dict)
@@ -71,3 +74,4 @@ class RunReport(BaseModel):
     result: ExecutionResult
     duration_ms: float
     agent_graph_mermaid: str = Field(default="", description="the compiled LangGraph orchestration graph")
+    artifacts_dir: str = Field(default="", description="where this run's debug bundle was written")

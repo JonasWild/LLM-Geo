@@ -7,7 +7,7 @@ import json
 
 import geopandas as gpd
 
-from .models import RunReport
+from .models import DAGSpec, ExecutionResult, RunReport
 
 _SHAPE = {"retrieval": ("([", "])"), "transformation": ("[", "]"), "synthesis": ("{{", "}}")}
 
@@ -42,17 +42,16 @@ def mermaid_solution_graph(report: RunReport) -> str:
     return "\n".join(lines)
 
 
-def mermaid_execution_graph(report: RunReport) -> str:
+def mermaid_execution_graph(dag: DAGSpec, result: ExecutionResult) -> str:
     """The same DAG colored by what actually happened at run time: ok/error/skipped + timing."""
-    result = report.result
     lines = ["flowchart TD"]
-    for node in report.dag.nodes:
+    for node in dag.nodes:
         open_, close_ = _SHAPE[node.kind.value]
         status = result.node_status.get(node.id, "skipped")
         dur = result.node_duration_ms.get(node.id)
         label = _label(node.id, status.upper(), f"{dur:.0f}ms" if dur is not None else "-")
         lines.append(f'    {node.id}{open_}"{label}"{close_}')
-    for node in report.dag.nodes:
+    for node in dag.nodes:
         for dep in node.depends_on:
             lines.append(f"    {dep} --> {node.id}")
     lines += [
@@ -60,7 +59,7 @@ def mermaid_execution_graph(report: RunReport) -> str:
         "    classDef err fill:#fee2e2,stroke:#dc2626,color:#7f1d1d;",
         "    classDef skipped fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray: 4 3;",
     ]
-    for node in report.dag.nodes:
+    for node in dag.nodes:
         cls = {"ok": "ok", "error": "err"}.get(result.node_status.get(node.id, "skipped"), "skipped")
         lines.append(f"    class {node.id} {cls};")
     return "\n".join(lines)
@@ -104,34 +103,27 @@ def node_table(report: RunReport) -> str:
     return "\n".join(rows)
 
 
-def _summarize(value, max_items: int = 6):
+def summarize_value(value, max_items: int = 6):
     """Collapse long lists (coordinate arrays, feature lists, ...) so the report stays scannable."""
     if isinstance(value, gpd.GeoDataFrame):
         return {"type": "GeoDataFrame", "rows": len(value), "columns": list(value.columns), "crs": str(value.crs)}
     if isinstance(value, dict):
-        return {k: _summarize(v, max_items) for k, v in value.items()}
+        return {k: summarize_value(v, max_items) for k, v in value.items()}
     if isinstance(value, list):
-        head = [_summarize(v, max_items) for v in value[:max_items]]
+        head = [summarize_value(v, max_items) for v in value[:max_items]]
         return head + [f"... {len(value) - max_items} more"] if len(value) > max_items else head
     return value
 
 
 def _pretty_outputs(report: RunReport, limit: int = 1500) -> str:
     _, payload = terminal_output(report)
-    text = json.dumps(_summarize(payload), indent=2, default=str)
+    text = json.dumps(summarize_value(payload), indent=2, default=str)
     return text if len(text) <= limit else text[:limit] + "\n... (truncated)"
 
 
-def case_section(name: str, report: RunReport, expect_success: bool, ok: bool, detail: str) -> str:
-    return "\n".join([
-        f"## {name} - {'PASS' if ok else 'FAIL'}",
-        "",
-        f"- **Duration:** {report.duration_ms / 1000:.1f}s &nbsp; "
-        f"**DAG-level repair rounds:** {report.repair_attempts} &nbsp; "
-        f"**Nodes:** {len(report.dag.nodes)} &nbsp; "
-        f"**Expected:** {'success' if expect_success else 'graceful failure'}",
-        f"- **Outcome:** {detail}",
-        "",
+def _sections(report: RunReport) -> list[str]:
+    """The shared body of a per-run report: task, output, graphs, agent stats, node table."""
+    return [
         "### Input task",
         f"> {report.task}",
         "",
@@ -147,7 +139,7 @@ def case_section(name: str, report: RunReport, expect_success: bool, ok: bool, d
         "",
         "### Execution graph (as run)",
         "```mermaid",
-        mermaid_execution_graph(report),
+        mermaid_execution_graph(report.dag, report.result),
         "```",
         "",
         "### Agent orchestration graph (LangGraph control flow)",
@@ -160,7 +152,42 @@ def case_section(name: str, report: RunReport, expect_success: bool, ok: bool, d
         "### Node metadata",
         node_table(report),
         "",
-    ])
+    ]
+
+
+def case_section(name: str, report: RunReport, expect_success: bool, ok: bool, detail: str) -> str:
+    lines = [
+        f"## {name} - {'PASS' if ok else 'FAIL'}",
+        "",
+        f"- **Duration:** {report.duration_ms / 1000:.1f}s &nbsp; "
+        f"**DAG-level repair rounds:** {report.repair_attempts} &nbsp; "
+        f"**Nodes:** {len(report.dag.nodes)} &nbsp; "
+        f"**Expected:** {'success' if expect_success else 'graceful failure'}",
+        f"- **Outcome:** {detail}",
+    ]
+    if report.artifacts_dir:
+        lines.append(f"- **Debug bundle:** `{report.artifacts_dir}`")
+    return "\n".join(lines + ["", *_sections(report)])
+
+
+def single_run_markdown(report: RunReport, generated_at: str) -> str:
+    """A standalone report for one run, written into its debug bundle as report.md."""
+    ok = report.result.success
+    lines = [
+        f"# Run report - {'SUCCESS' if ok else 'FAILED'}",
+        "",
+        f"Generated: {generated_at}",
+        "",
+        f"- **Duration:** {report.duration_ms / 1000:.1f}s &nbsp; "
+        f"**DAG-level repair rounds:** {report.repair_attempts} &nbsp; "
+        f"**Nodes:** {len(report.dag.nodes)}",
+    ]
+    if not ok:
+        lines.append(f"- **Error:** {report.result.error}")
+        if report.result.failing_node_ids:
+            failing = ", ".join(f"`{n}`" for n in report.result.failing_node_ids)
+            lines.append(f"- **Failing node(s):** {failing}")
+    return "\n".join(lines + ["", *_sections(report)]) + "\n"
 
 
 def full_report(run_at: str, cases: list[dict]) -> str:

@@ -109,11 +109,13 @@ else in the type system. Classification only runs when a service's spec actually
 | `llm_geo/models.py` | shared pydantic models: NodeSpec, DAGSpec, NodeImplementation, ExecutionResult, RunReport |
 | `llm_geo/llm.py` | `ChatOpenAI`/`OpenAIEmbeddings` factories (model/base URL/API key configurable via env, see `.env.example`), rate-limit retry, deepagents harness profile (strips unused filesystem/shell tools) |
 | `llm_geo/structured_output.py` | selectable structured-output strategy (`LLM_STRUCTURED_OUTPUT_MODE`: `provider` native JSON-schema, or `json_object` classic JSON mode + local Pydantic validation), shared by planner/coder/classify -- never tool-calling |
-| `llm_geo/trace.py` | `Tracer`: JSONL event log to `traces/run.jsonl` + telegraphic stdout logging |
+| `llm_geo/trace.py` | `Tracer`: JSONL event log (full tracebacks on errors) + telegraphic stdout logging + optional per-run `trace.log` mirror and error hook |
+| `llm_geo/artifacts.py` | `RunArtifacts`: per-run debug bundle under `output/<task_name>/<timestamp>/` -- every prompt, code attempt, contract result, execution error (full traceback), plus a generated `README.md` index and `errors/summary.md` |
 | `llm_geo/report.py` | `RunReport` -> Mermaid solution/execution graphs + Markdown report |
 | `llm_geo/cli.py` | `python -m llm_geo.cli "<task>"` single-task entrypoint |
 | `main.py` | runs a fixed suite of ~20 end-to-end test tasks, writes `reports/run_<timestamp>.md` |
 | `tests/test_pipeline.py` | offline pytest suite (no LLM calls): contracts, executor, registry pipeline, cycle detection |
+| `tests/test_artifacts.py` | offline pytest suite for the debug bundle: layout, error records, tracer hook |
 | `data/*.geojson` | sample fixtures used by `main.py` test cases |
 
 ## Run
@@ -125,6 +127,28 @@ python -m llm_geo.cli "Buffer sample points by 100m and summarize."
 python main.py                          # full test-case suite -> reports/run_*.md
 pytest                                   # offline unit tests, no API key needed
 ```
+
+### Debug bundles (`output/<task_name>/<timestamp>/`)
+
+Every run (CLI or `main.py` case) writes a self-contained debug bundle. Open its `README.md`
+first: it shows the run status, links every recorded error, and explains the layout:
+
+```
+output/<task_name>/<timestamp>/
+|-- README.md                  # start here: status, error index, navigation guide, file tree
+|-- report.md                  # final outputs, Mermaid solution/execution graphs, node table
+|-- run.json                   # machine-readable summary (status, timings, attempts, errors)
+|-- task.txt / trace.jsonl / trace.log
+|-- plan/                      # planner prompts + the planned DAG (dag.json, solution_graph.mmd)
+|-- nodes/<id>/                # per LLM-implemented node: spec, system prompt, final.py, and
+|                              #   round_RR/attempt_AA/{code.py,prompt.md,contract.txt,transcript.md}
+|-- execution/attempt_AA/      # per execute round: result.json, outputs.json, graph, traceback.txt
+`-- errors/                    # summary.md + one numbered file per error with the full traceback
+```
+
+Contract-test failures, node crashes at execution time (with full tracebacks), and planner/coder
+crashes all land chronologically in `errors/summary.md`, each linking to a detail file and to the
+exact code attempt that produced it.
 
 Env vars (see `.env.example`): `OPENAI_API_KEY` (required), `OPENAI_MODEL` (optional, default
 `gpt-4o-mini`), `OPENAI_BASE_URL` (optional, point at a custom OpenAI-compatible endpoint),

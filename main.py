@@ -19,7 +19,8 @@ load_dotenv()
 if not os.environ.get("OPENAI_API_KEY"):
     raise SystemExit("OPENAI_API_KEY not found in the environment (set it, or add it to a .env file).")
 
-from llm_geo.graph import run  # noqa: E402 (import after the API key is confirmed present)
+from llm_geo.artifacts import RunArtifacts  # noqa: E402 (import after the API key is confirmed present)
+from llm_geo.graph import run  # noqa: E402
 from llm_geo.report import full_report, linear_order, terminal_output  # noqa: E402
 
 DATA = Path(__file__).parent / "data"
@@ -178,18 +179,20 @@ TEST_CASES = [
 
 
 def run_case(case: dict):
-    """Returns (ok, detail, report). `report` is None if the pipeline crashed outright."""
+    """Returns (ok, detail, report, artifacts). `report` is None if the pipeline crashed outright;
+    `artifacts` always points at the run's debug bundle (output/<case name>/<timestamp>/)."""
+    artifacts = RunArtifacts(case["name"])
     try:
-        report = run(case["task"])
+        report = run(case["task"], artifacts=artifacts)
     except Exception as exc:  # planner/coder crashed instead of reporting a graceful failure
-        return False, f"raised {type(exc).__name__}: {exc}", None
+        return False, f"raised {type(exc).__name__}: {exc}", None, artifacts
 
     result = report.result
     if case["expect_success"]:
-        return result.success, ("ok" if result.success else f"pipeline failed: {result.error}"), report
+        return result.success, ("ok" if result.success else f"pipeline failed: {result.error}"), report, artifacts
     ok = not result.success and bool(result.error)
     detail = "gracefully reported failure as expected" if ok else "expected a graceful failure but did not get one"
-    return ok, detail, report
+    return ok, detail, report, artifacts
 
 
 def _truncate(text: str, width: int) -> str:
@@ -222,6 +225,7 @@ def print_final_summary(cases: list[dict]) -> None:
             print(f"     meta  : nodes={len(report.dag.nodes)} repair_rounds={report.repair_attempts} [{', '.join(sources)}]")
         else:
             print(f"     detail: {c['detail']}")
+        print(f"     bundle: {c['artifacts'].dir}")
 
     print("\n" + "-" * 88)
     print(f"Total cases: {len(cases)}  Passed: {passed}  Failed: {failed}")
@@ -245,11 +249,13 @@ def main() -> None:
     print(f"Running {len(TEST_CASES)} end-to-end agentic workflow test cases...\n")
     for i, case in enumerate(TEST_CASES, 1):
         t0 = time.monotonic()
-        ok, detail, report = run_case(case)
+        ok, detail, report, artifacts = run_case(case)
         elapsed = time.monotonic() - t0
         print(f"[{i:02d}/{len(TEST_CASES)}] {'PASS' if ok else 'FAIL':<4} {case['name']:<{name_width}} "
               f"({elapsed:5.1f}s) - {detail}")
-        cases.append({**case, "ok": ok, "detail": detail, "report": report, "elapsed": elapsed})
+        if not ok:
+            print(f"{'':>10}debug bundle: {artifacts.dir}")
+        cases.append({**case, "ok": ok, "detail": detail, "report": report, "artifacts": artifacts, "elapsed": elapsed})
         if i < len(TEST_CASES):
             time.sleep(3)  # spread OpenAI token usage across the per-minute rate-limit window
 

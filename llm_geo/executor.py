@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import traceback
 
 import networkx as nx
 
@@ -53,7 +54,7 @@ def execute(dag: DAGSpec, implementations: dict[str, NodeImplementation], tracer
     try:
         order = list(nx.topological_sort(g))
     except nx.NetworkXUnfeasible as exc:
-        return ExecutionResult(success=False, error=f"DAG has a cycle: {exc}")
+        return ExecutionResult(success=False, error=f"DAG has a cycle: {exc}", error_traceback=traceback.format_exc())
 
     outputs: dict[str, dict] = {}
     node_order: list[str] = []
@@ -72,6 +73,7 @@ def execute(dag: DAGSpec, implementations: dict[str, NodeImplementation], tracer
             node_duration_ms[node_id] = (time.monotonic() - t0) * 1000
             return ExecutionResult(
                 success=False, outputs=outputs, failing_node_ids=[node_id], error=str(exc),
+                error_traceback=traceback.format_exc(),
                 node_order=node_order, node_status=node_status, node_duration_ms=node_duration_ms,
             )
         node_status[node_id] = "ok"

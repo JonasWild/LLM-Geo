@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from . import coder, executor, planner
+from .artifacts import RunArtifacts
 from .llm import get_model
 from .models import DAGSpec, ExecutionResult, NodeImplementation, NodeSpec, RunReport
 from .trace import Tracer
@@ -27,12 +28,14 @@ class State(TypedDict):
     node_to_implement: NodeSpec | None
 
 
-def build_app(tracer: Tracer):
+def build_app(tracer: Tracer, artifacts: RunArtifacts | None = None):
     model = get_model()
 
     def plan_node(state: State) -> dict:
         with tracer.span("plan"):
-            dag = planner.plan(state["task"], model)
+            dag = planner.plan(state["task"], model, artifacts=artifacts)
+        if artifacts:
+            artifacts.save_plan(dag)
         return {
             "dag": dag, "attempt": 0, "implementations": {}, "implementation_attempts": {}, "implement_calls": 0,
         }
@@ -40,7 +43,7 @@ def build_app(tracer: Tracer):
     def implement_one(state: State) -> dict:
         node = state["node_to_implement"]
         with tracer.span("implement", node.id):
-            impl, attempts = coder.implement_node(node, model)
+            impl, attempts = coder.implement_node(node, model, artifacts=artifacts)
         return {
             "implementations": {node.id: impl},
             "implementation_attempts": {node.id: attempts},
@@ -48,9 +51,12 @@ def build_app(tracer: Tracer):
         }
 
     def assemble_node(state: State) -> dict:
-        with tracer.span("assemble_execute", attempt=state["attempt"] + 1):
+        attempt = state["attempt"] + 1
+        with tracer.span("assemble_execute", attempt=attempt):
             result = executor.execute(state["dag"], state["implementations"], tracer)
-        return {"result": result, "attempt": state["attempt"] + 1}
+        if artifacts:
+            artifacts.save_execution(attempt, result, state["dag"])
+        return {"result": result, "attempt": attempt}
 
     def route_after_plan(state: State):
         pending = [n for n in state["dag"].nodes if not n.registry_id]
@@ -74,14 +80,35 @@ def build_app(tracer: Tracer):
     return g.compile()
 
 
-def run(task: str, tracer: Tracer | None = None) -> RunReport:
-    tracer = tracer or Tracer()
-    app = build_app(tracer)
+def run(
+    task: str,
+    tracer: Tracer | None = None,
+    artifacts: RunArtifacts | None = None,
+    task_name: str | None = None,
+) -> RunReport:
+    """Run one task end-to-end. Every run writes a debug bundle (prompts, code attempts, contract
+    results, execution errors with full tracebacks) under output/<task_name>/<timestamp>/; pass
+    `task_name` for a readable bundle dir name, or a prebuilt `artifacts` to control it fully.
+    """
+    artifacts = artifacts or RunArtifacts(task_name or task)
+    tracer = tracer or Tracer(
+        path=artifacts.dir / "trace.jsonl",
+        log_file=artifacts.dir / "trace.log",
+        on_error=lambda phase, node_id, message, tb: artifacts.record_error(
+            phase, message, node_id=node_id, traceback_text=tb
+        ),
+    )
+    artifacts.save_task(task)
+    app = build_app(tracer, artifacts)
     agent_graph_mermaid = app.get_graph().draw_mermaid()
     t0 = time.monotonic()
-    with tracer.span("run", task=task[:60]):
-        final = app.invoke({"task": task}, {"recursion_limit": 50})
-    return RunReport(
+    try:
+        with tracer.span("run", task=task[:60]):
+            final = app.invoke({"task": task}, {"recursion_limit": 50})
+    except Exception:
+        artifacts.finalize(None)  # the bundle still holds every prompt/attempt/error so far
+        raise
+    report = RunReport(
         task=task,
         dag=final["dag"],
         implementations=final["implementations"],
@@ -91,4 +118,7 @@ def run(task: str, tracer: Tracer | None = None) -> RunReport:
         result=final["result"],
         duration_ms=(time.monotonic() - t0) * 1000,
         agent_graph_mermaid=agent_graph_mermaid,
+        artifacts_dir=str(artifacts.dir),
     )
+    artifacts.finalize(report)
+    return report
