@@ -57,10 +57,11 @@ def mermaid_execution_graph(dag: DAGSpec, result: ExecutionResult) -> str:
     lines += [
         "    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d;",
         "    classDef err fill:#fee2e2,stroke:#dc2626,color:#7f1d1d;",
+        "    classDef cached fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e;",
         "    classDef skipped fill:#f3f4f6,stroke:#9ca3af,color:#374151,stroke-dasharray: 4 3;",
     ]
     for node in dag.nodes:
-        cls = {"ok": "ok", "error": "err"}.get(result.node_status.get(node.id, "skipped"), "skipped")
+        cls = {"ok": "ok", "error": "err", "cached": "cached"}.get(result.node_status.get(node.id, "skipped"), "skipped")
         lines.append(f"    class {node.id} {cls};")
     return "\n".join(lines)
 

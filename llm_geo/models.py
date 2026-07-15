@@ -43,6 +43,17 @@ class NodeImplementation(BaseModel):
     notes: str = ""
 
 
+class CodeEdit(BaseModel):
+    find: str = Field(description="exact substring of the current code to replace; must occur exactly once")
+    replace: str = Field(description="replacement text")
+
+
+class NodeCodeEdits(BaseModel):
+    node_id: str
+    edits: list[CodeEdit] = Field(description="minimal find/replace edits, applied in order")
+    notes: str = ""
+
+
 class ContractResult(BaseModel):
     ok: bool
     error: str | None = None

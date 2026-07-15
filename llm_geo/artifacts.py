@@ -26,6 +26,7 @@ Layout of one bundle:
     |           |-- prompt.md        #   the user prompt (incl. repair feedback)
     |           |-- contract.txt     #   PASS, or FAIL + full contract-test traceback
     |           |-- transcript.md    #   the agent's message/tool-call transcript
+    |           |-- edits.json       #   repair rounds only: the find/replace edits returned
     |           `-- notes.md         #   the coder's own notes, if any
     |-- execution/attempt_AA/        # one dir per assemble/execute round
     |   |-- result.json              # ExecutionResult (status, order, timings)
@@ -196,6 +197,7 @@ class RunArtifacts:
         error: str | None = None,
         notes: str = "",
         transcript_md: str = "",
+        edits_json: str = "",
     ) -> None:
         base = f"nodes/{node_id}/round_{round:02d}/attempt_{attempt:02d}"
         self.write(f"{base}/code.py", code)
@@ -205,6 +207,8 @@ class RunArtifacts:
             self.write(f"{base}/notes.md", notes)
         if transcript_md:
             self.write(f"{base}/transcript.md", transcript_md)
+        if edits_json:
+            self.write(f"{base}/edits.json", edits_json)
         if not ok:
             self.record_error(
                 "contract_test",
