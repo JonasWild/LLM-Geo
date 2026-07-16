@@ -116,15 +116,39 @@ def summarize_value(value, max_items: int = 6):
     return value
 
 
-def _pretty_outputs(report: RunReport, limit: int = 1500) -> str:
-    _, payload = terminal_output(report)
+def _pretty(payload, limit: int = 600) -> str:
     text = json.dumps(summarize_value(payload), indent=2, default=str)
     return text if len(text) <= limit else text[:limit] + "\n... (truncated)"
 
 
-def _sections(report: RunReport) -> list[str]:
-    """The shared body of a per-run report: task, output, graphs, agent stats, node table."""
-    return [
+def _pretty_outputs(report: RunReport, limit: int = 1500) -> str:
+    return _pretty(terminal_output(report)[1], limit)
+
+
+def node_io_section(report: RunReport) -> list[str]:
+    """Per node, in execution order: the resolved inputs it received and the outputs it produced
+    (summarized + truncated, GeoDataFrames collapsed to shape/columns/crs)."""
+    result = report.result
+    lines: list[str] = []
+    for node_id in result.node_order or list(result.outputs):
+        status = result.node_status.get(node_id, "?")
+        dur = result.node_duration_ms.get(node_id)
+        lines.append(f"#### `{node_id}` -- {status}{f' ({dur:.0f}ms)' if dur is not None else ''}")
+        if status == "cached":
+            lines.append("_Output reused from the previous execution round (not re-executed)._")
+        elif node_id in result.node_inputs:
+            lines += ["Inputs:", "```json", _pretty(result.node_inputs[node_id]), "```"]
+        if node_id in result.outputs:
+            lines += ["Outputs:", "```json", _pretty(result.outputs[node_id]), "```"]
+        elif status == "error":
+            lines.append(f"Outputs: none -- failed with `{' '.join((result.error or '').split())[:200]}`")
+        lines.append("")
+    return lines
+
+
+def _sections(report: RunReport, include_agent_graph: bool = True) -> list[str]:
+    """The shared body of a per-run report: task, output, graphs, node I/O, agent stats, node table."""
+    lines = [
         "### Input task",
         f"> {report.task}",
         "",
@@ -143,17 +167,30 @@ def _sections(report: RunReport) -> list[str]:
         mermaid_execution_graph(report.dag, report.result),
         "```",
         "",
-        "### Agent orchestration graph (LangGraph control flow)",
-        "```mermaid",
-        report.agent_graph_mermaid,
-        "```",
-        "This run's path through it:",
+        "### Node inputs/outputs (execution order)",
+        *node_io_section(report),
+    ]
+    if include_agent_graph:
+        lines += [
+            "### Agent orchestration graph (LangGraph control flow)",
+            "```mermaid",
+            report.agent_graph_mermaid,
+            "```",
+            "This run's path through it:",
+        ]
+    else:
+        lines += [
+            "### Agent control flow",
+            "This run's path through the shared orchestration graph (rendered once at the top of this report):",
+        ]
+    lines += [
         agent_run_stats(report),
         "",
         "### Node metadata",
         node_table(report),
         "",
     ]
+    return lines
 
 
 def case_section(name: str, report: RunReport, expect_success: bool, ok: bool, detail: str) -> str:
@@ -168,7 +205,7 @@ def case_section(name: str, report: RunReport, expect_success: bool, ok: bool, d
     ]
     if report.artifacts_dir:
         lines.append(f"- **Debug bundle:** `{report.artifacts_dir}`")
-    return "\n".join(lines + ["", *_sections(report)])
+    return "\n".join(lines + ["", *_sections(report, include_agent_graph=False)])
 
 
 def single_run_markdown(report: RunReport, generated_at: str) -> str:
@@ -213,6 +250,20 @@ def full_report(run_at: str, cases: list[dict]) -> str:
         repairs = str(r.repair_attempts) if r else "-"
         lines.append(f"| {i:02d} | {c['name']} | {'PASS' if c['ok'] else 'FAIL'} | {dur} | {nodes} | {repairs} |")
     lines.append("")
+
+    # The LangGraph control flow is identical for every case -- render it exactly once up front.
+    first = next((c["report"] for c in cases if c["report"] and c["report"].agent_graph_mermaid), None)
+    if first is not None:
+        lines += [
+            "## Agent orchestration graph (LangGraph control flow)",
+            "",
+            "All cases share this control flow; each case section below lists its own path through it.",
+            "",
+            "```mermaid",
+            first.agent_graph_mermaid,
+            "```",
+            "",
+        ]
 
     for c in cases:
         if c["report"] is None:

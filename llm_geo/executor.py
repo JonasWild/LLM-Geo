@@ -77,6 +77,7 @@ def execute(
     node_order: list[str] = []
     node_status: dict[str, str] = {}
     node_duration_ms: dict[str, float] = {}
+    node_inputs: dict[str, dict] = {}
     for node_id in order:
         node = by_id[node_id]
         node_order.append(node_id)
@@ -90,7 +91,8 @@ def execute(
         try:
             with tracer.span("exec", node_id):
                 fn = _callable_for(node, implementations)
-                outputs[node_id] = fn(**_resolve_inputs(node, outputs))
+                node_inputs[node_id] = _resolve_inputs(node, outputs)
+                outputs[node_id] = fn(**node_inputs[node_id])
         except Exception as exc:
             node_status[node_id] = "error"
             node_duration_ms[node_id] = (time.monotonic() - t0) * 1000
@@ -98,6 +100,7 @@ def execute(
                 success=False, outputs=outputs, failing_node_ids=[node_id], error=str(exc),
                 error_traceback=traceback.format_exc(),
                 node_order=node_order, node_status=node_status, node_duration_ms=node_duration_ms,
+                node_inputs=node_inputs,
             )
         node_status[node_id] = "ok"
         node_duration_ms[node_id] = (time.monotonic() - t0) * 1000
@@ -110,9 +113,11 @@ def execute(
                 success=False, outputs=outputs, failing_node_ids=[node_id],
                 error=f"terminal node '{node_id}' missing outputs {missing}",
                 node_order=node_order, node_status=node_status, node_duration_ms=node_duration_ms,
+                node_inputs=node_inputs,
             )
 
     return ExecutionResult(
         success=True, outputs=outputs,
         node_order=node_order, node_status=node_status, node_duration_ms=node_duration_ms,
+        node_inputs=node_inputs,
     )
