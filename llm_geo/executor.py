@@ -48,13 +48,30 @@ def _callable_for(node: NodeSpec, implementations: dict[str, NodeImplementation]
     return compile_node(implementations[node.id].code)
 
 
-def execute(dag: DAGSpec, implementations: dict[str, NodeImplementation], tracer: Tracer) -> ExecutionResult:
+def execute(
+    dag: DAGSpec,
+    implementations: dict[str, NodeImplementation],
+    tracer: Tracer,
+    prior_outputs: dict[str, dict] | None = None,
+    stale_node_ids: frozenset[str] | set[str] = frozenset(),
+) -> ExecutionResult:
+    """Execute the DAG in dependency order. On repair rounds, pass the previous attempt's
+    `outputs` and the re-implemented node ids as `stale_node_ids`: any prior output whose node is
+    neither stale nor downstream of a stale node is reused (status `cached`) instead of re-run --
+    in particular, live retrieval nodes that already succeeded are not hit again."""
     g = build_graph(dag)
     by_id = {n.id: n for n in dag.nodes}
     try:
         order = list(nx.topological_sort(g))
     except nx.NetworkXUnfeasible as exc:
         return ExecutionResult(success=False, error=f"DAG has a cycle: {exc}", error_traceback=traceback.format_exc())
+
+    reusable: dict[str, dict] = {}
+    if prior_outputs:
+        stale = set(stale_node_ids)
+        for node_id in stale_node_ids:
+            stale |= nx.descendants(g, node_id)
+        reusable = {nid: out for nid, out in prior_outputs.items() if nid in by_id and nid not in stale}
 
     outputs: dict[str, dict] = {}
     node_order: list[str] = []
@@ -63,6 +80,12 @@ def execute(dag: DAGSpec, implementations: dict[str, NodeImplementation], tracer
     for node_id in order:
         node = by_id[node_id]
         node_order.append(node_id)
+        if node_id in reusable:
+            with tracer.span("exec", node_id, cached=True):
+                outputs[node_id] = reusable[node_id]
+            node_status[node_id] = "cached"
+            node_duration_ms[node_id] = 0.0
+            continue
         t0 = time.monotonic()
         try:
             with tracer.span("exec", node_id):

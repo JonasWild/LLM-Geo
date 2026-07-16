@@ -26,6 +26,7 @@ class State(TypedDict):
     attempt: int
     result: ExecutionResult | None
     node_to_implement: NodeSpec | None
+    repair_context: dict | None
 
 
 def build_app(tracer: Tracer, artifacts: RunArtifacts | None = None):
@@ -42,8 +43,9 @@ def build_app(tracer: Tracer, artifacts: RunArtifacts | None = None):
 
     def implement_one(state: State) -> dict:
         node = state["node_to_implement"]
-        with tracer.span("implement", node.id):
-            impl, attempts = coder.implement_node(node, model, artifacts=artifacts)
+        repair_context = state.get("repair_context")
+        with tracer.span("implement", node.id, mode="repair" if repair_context else "initial"):
+            impl, attempts = coder.implement_node(node, model, artifacts=artifacts, repair_context=repair_context)
         return {
             "implementations": {node.id: impl},
             "implementation_attempts": {node.id: attempts},
@@ -52,8 +54,16 @@ def build_app(tracer: Tracer, artifacts: RunArtifacts | None = None):
 
     def assemble_node(state: State) -> dict:
         attempt = state["attempt"] + 1
+        # On repair rounds, reuse the previous attempt's outputs for everything that is not the
+        # (re-implemented) failing node or downstream of it -- see executor.execute.
+        prior = state.get("result")
+        prior_outputs = prior.outputs if prior and not prior.success else None
+        stale = frozenset(prior.failing_node_ids) if prior_outputs else frozenset()
         with tracer.span("assemble_execute", attempt=attempt):
-            result = executor.execute(state["dag"], state["implementations"], tracer)
+            result = executor.execute(
+                state["dag"], state["implementations"], tracer,
+                prior_outputs=prior_outputs, stale_node_ids=stale,
+            )
         if artifacts:
             artifacts.save_execution(attempt, result, state["dag"])
         return {"result": result, "attempt": attempt}
@@ -67,7 +77,17 @@ def build_app(tracer: Tracer, artifacts: RunArtifacts | None = None):
         if result.success or state["attempt"] >= MAX_REPAIR_ATTEMPTS:
             return END
         to_repair = [n for n in state["dag"].nodes if n.id in result.failing_node_ids and not n.registry_id]
-        return [Send("implement_one", {"node_to_implement": n}) for n in to_repair] or END
+        return [
+            Send("implement_one", {
+                "node_to_implement": n,
+                "repair_context": {
+                    "previous_code": state["implementations"][n.id].code,
+                    "error": result.error,
+                    "traceback": (result.error_traceback or "")[-2000:],
+                },
+            })
+            for n in to_repair
+        ] or END
 
     g = StateGraph(State)
     g.add_node("plan", plan_node)

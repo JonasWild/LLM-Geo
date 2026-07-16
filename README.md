@@ -21,6 +21,10 @@ plan -> implement_one (parallel, per unimplemented node) -> assemble (execute DA
    runs each node's callable in order, stops at first failure.
 4. **repair loop**: if execution fails, re-invoke `implement_one` only for the failing
    LLM-generated node(s), re-assemble. Up to `MAX_REPAIR_ATTEMPTS=3` (graph.py:16).
+   Repair rounds are context-aware and incremental: the coder receives the previous code plus
+   the runtime error/traceback and returns minimal find/replace edits (`NodeCodeEdits`) instead
+   of a rewrite, and re-execution reuses the previous round's outputs for every node that is not
+   the repaired node or downstream of it (status `cached` -- live retrieval nodes are not re-hit).
 5. Result packaged as `RunReport` (`models.py`): dag, implementations, per-node coder attempts,
    ExecutionResult (success, outputs, node_order/status/duration, error).
 
