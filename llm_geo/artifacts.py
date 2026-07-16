@@ -30,6 +30,7 @@ Layout of one bundle:
     |           `-- notes.md         #   the coder's own notes, if any
     |-- execution/attempt_AA/        # one dir per assemble/execute round
     |   |-- result.json              # ExecutionResult (status, order, timings)
+    |   |-- inputs.json              # summarized resolved inputs per executed node
     |   |-- outputs.json             # summarized per-node outputs
     |   |-- execution_graph.mmd      # as-run DAG colored by outcome
     |   `-- traceback.txt            # full traceback of the failing node, if any
@@ -227,8 +228,9 @@ class RunArtifacts:
         with self._lock:
             self._execution_attempts = max(self._execution_attempts, attempt)
         base = f"execution/attempt_{attempt:02d}"
-        self.write_json(f"{base}/result.json", result.model_dump(exclude={"outputs"}))
+        self.write_json(f"{base}/result.json", result.model_dump(exclude={"outputs", "node_inputs"}))
         self.write_json(f"{base}/outputs.json", {k: summarize_value(v) for k, v in result.outputs.items()})
+        self.write_json(f"{base}/inputs.json", {k: summarize_value(v) for k, v in result.node_inputs.items()})
         if dag is not None:
             self.write(f"{base}/execution_graph.mmd", mermaid_execution_graph(dag, result) + "\n")
         if result.error_traceback:
@@ -375,7 +377,7 @@ class RunArtifacts:
             "| `nodes/<id>/system_prompt.md` | Coder system prompt for the node |",
             "| `nodes/<id>/final.py` | Accepted (or last attempted) implementation |",
             "| `nodes/<id>/round_RR/attempt_AA/` | Per coder attempt: `code.py`, `prompt.md`, `contract.txt`, `transcript.md` |",
-            "| `execution/attempt_AA/` | Per execute round: `result.json`, `outputs.json`, `execution_graph.mmd`, `traceback.txt` |",
+            "| `execution/attempt_AA/` | Per execute round: `result.json`, `inputs.json`, `outputs.json`, `execution_graph.mmd`, `traceback.txt` |",
             "| `trace.jsonl` / `trace.log` | Step-by-step trace with durations (JSONL + console mirror) |",
             "",
             "## Bundle contents",

@@ -69,8 +69,11 @@ class ExecutionResult(BaseModel):
         default=None, description="full python traceback of the failing node, when the failure raised"
     )
     node_order: list[str] = Field(default_factory=list, description="nodes in the order they executed")
-    node_status: dict[str, str] = Field(default_factory=dict, description="node id -> 'ok'|'error'")
+    node_status: dict[str, str] = Field(default_factory=dict, description="node id -> 'ok'|'error'|'cached'")
     node_duration_ms: dict[str, float] = Field(default_factory=dict)
+    node_inputs: dict[str, dict] = Field(
+        default_factory=dict, description="resolved inputs (params + matched upstream outputs) per executed node"
+    )
 
 
 class RunReport(BaseModel):
