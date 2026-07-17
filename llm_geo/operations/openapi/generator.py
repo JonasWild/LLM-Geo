@@ -14,11 +14,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from langchain_core.language_models.chat_models import BaseChatModel
+
+from llm_geo.operations.openapi.classify import classify_operations
 from llm_geo.operations.openapi.models import GenerationResult
 from llm_geo.operations.openapi.parser import parse_openapi, python_identifier
 from llm_geo.operations.openapi.renderer import render_module
 
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2  # bumped: @code now requires kind=, retrieval GeoJSON responses -> GeoDataFrame
 DEFAULT_OUTPUT_DIRECTORY = Path(__file__).parents[1] / "generated"
 
 
@@ -93,6 +96,7 @@ def generate_openapi_operations(
     auth_header: str = "Authorization",
     auth_scheme: str = "Bearer",
     force: bool = False,
+    classifier_model: BaseChatModel | None = None,
 ) -> GenerationResult:
     """Generate, validate, and atomically promote operations for one service."""
     normalized_spec = copy.deepcopy(spec)
@@ -121,10 +125,17 @@ def generate_openapi_operations(
             return GenerationResult(
                 module_path, spec_path, manifest_path, operation_names, False
             )
+    classifications = classify_operations(parsed.operations, classifier_model)
+    kinds = {name: classification.kind for name, classification in classifications.items()}
+    returns_geojson = {
+        name: classification.returns_geojson for name, classification in classifications.items()
+    }
     source_code = render_module(
         parsed.operations,
         service=service_name,
         default_base_url=default_base_url,
+        kinds=kinds,
+        returns_geojson=returns_geojson,
         api_key_environment=api_key_environment,
         auth_header=auth_header,
         auth_scheme=auth_scheme,
@@ -136,6 +147,10 @@ def generate_openapi_operations(
         "generator_version": GENERATOR_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "operation_ids": list(operation_names),
+        "classifications": {
+            name: {"kind": kinds[name], "returns_geojson": returns_geojson[name]}
+            for name in operation_names
+        },
         "skipped": list(parsed.skipped),
     }
     output_directory.mkdir(parents=True, exist_ok=True)

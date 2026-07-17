@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 from functools import lru_cache
 from typing import Any
 from urllib.parse import quote
 
+import geopandas as gpd
 import requests
 
 
@@ -92,3 +94,24 @@ def invoke_json(
         raise OpenAPIOperationError(
             f"{service} {method.upper()} {path} returned invalid JSON"
         ) from error
+
+
+def geojson_to_geodataframe(payload: Any, *, source: str) -> gpd.GeoDataFrame:
+    """Convert a decoded GeoJSON JSON payload (FeatureCollection, Feature, or bare Geometry)
+    into a GeoDataFrame with provenance metadata in `.attrs["provenance"]`."""
+    if isinstance(payload, dict) and payload.get("type") == "FeatureCollection":
+        features = payload.get("features") or []
+    elif isinstance(payload, dict) and payload.get("type") == "Feature":
+        features = [payload]
+    elif isinstance(payload, dict) and "coordinates" in payload:
+        features = [{"type": "Feature", "properties": {}, "geometry": payload}]
+    else:
+        raise OpenAPIOperationError(f"{source} did not return a recognizable GeoJSON payload")
+    gdf = (
+        gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+        if features else gpd.GeoDataFrame({"geometry": []}, crs="EPSG:4326")
+    )
+    gdf.attrs["provenance"] = {
+        "source": source, "retrieved_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    return gdf

@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, get_type_hints, overload
+from typing import Any, Callable, Literal, get_type_hints
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,7 @@ class RegisteredOperation:
     function: Callable[..., object]
     module: str
     name: str
+    kind: Literal["retrieval", "transformation", "synthesis"]
     description: str
     inputs: tuple[tuple[str, str, str], ...]
     defaults: dict[str, Any]
@@ -35,6 +36,7 @@ class RegisteredOperation:
     def catalog_entry(self) -> dict[str, object]:
         return {
             "id": self.id,
+            "kind": self.kind,
             "description": self.description,
             "inputs": [
                 {
@@ -56,73 +58,66 @@ class RegisteredOperation:
 _OPERATIONS: dict[str, RegisteredOperation] = {}
 
 
-@overload
-def code(function: Callable[..., object]) -> Callable[..., object]: ...
-
-
-@overload
 def code(
-    function: None = None
-) -> Callable[[Callable[..., object]], Callable[..., object]]: ...
-
-
-def code(
-    function: Callable[..., object] | None = None
-) -> Callable[..., object]:
+    *, kind: Literal["retrieval", "transformation", "synthesis"]
+) -> Callable[[Callable[..., object]], Callable[..., object]]:
     """Register one fully typed, documented, top-level trusted operation."""
-    if function is None:
-        return lambda decorated: code(decorated)
-    if "<locals>" in function.__qualname__ or "." in function.__qualname__:
-        raise TypeError("@code functions must be defined at module scope")
-    signature = inspect.signature(function)
-    hints = get_type_hints(function)
-    if "return" not in hints or hints["return"] in {Any, None, type(None)}:
-        raise TypeError(f"{function.__name__} must declare one concrete return type")
-    documentation = inspect.getdoc(function) or ""
-    summary, arguments, result = _parse_docstring(documentation)
-    inputs: list[tuple[str, str, str]] = []
-    defaults: dict[str, Any] = {}
-    for parameter in signature.parameters.values():
-        if parameter.kind in {
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        }:
-            raise TypeError(f"{function.__name__} has unsupported parameter {parameter.name!r}")
-        annotation = hints.get(parameter.name, inspect.Signature.empty)
-        if annotation in {inspect.Signature.empty, Any}:
-            raise TypeError(f"{function.__name__}.{parameter.name} must have a concrete type")
-        if parameter.name not in arguments:
-            raise TypeError(f"Docstring Args section is missing {parameter.name!r}")
-        inputs.append(
-            (parameter.name, _type_name(annotation), arguments[parameter.name])
+
+    def decorator(function: Callable[..., object]) -> Callable[..., object]:
+        if "<locals>" in function.__qualname__ or "." in function.__qualname__:
+            raise TypeError("@code functions must be defined at module scope")
+        signature = inspect.signature(function)
+        hints = get_type_hints(function)
+        if "return" not in hints or hints["return"] in {Any, None, type(None)}:
+            raise TypeError(f"{function.__name__} must declare one concrete return type")
+        documentation = inspect.getdoc(function) or ""
+        summary, arguments, result = _parse_docstring(documentation)
+        inputs: list[tuple[str, str, str]] = []
+        defaults: dict[str, Any] = {}
+        for parameter in signature.parameters.values():
+            if parameter.kind in {
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }:
+                raise TypeError(f"{function.__name__} has unsupported parameter {parameter.name!r}")
+            annotation = hints.get(parameter.name, inspect.Signature.empty)
+            if annotation in {inspect.Signature.empty, Any}:
+                raise TypeError(f"{function.__name__}.{parameter.name} must have a concrete type")
+            if parameter.name not in arguments:
+                raise TypeError(f"Docstring Args section is missing {parameter.name!r}")
+            inputs.append(
+                (parameter.name, _type_name(annotation), arguments[parameter.name])
+            )
+            if parameter.default is not inspect.Signature.empty:
+                defaults[parameter.name] = parameter.default
+        operation_id = function.__name__
+        if operation_id in _OPERATIONS:
+            existing = _OPERATIONS[operation_id]
+            raise ValueError(
+                f"Duplicate @code function name {operation_id!r}: "
+                f"{existing.qualified_id!r} and "
+                f"{f'{function.__module__}.{function.__qualname__}'!r}. "
+                "@code function names must be globally unique."
+            )
+        _OPERATIONS[operation_id] = RegisteredOperation(
+            id=operation_id,
+            function=function,
+            module=function.__module__,
+            name=function.__name__,
+            kind=kind,
+            description=summary,
+            inputs=tuple(inputs),
+            defaults=defaults,
+            output_type=_type_name(hints["return"]),
+            output_description=result
         )
-        if parameter.default is not inspect.Signature.empty:
-            defaults[parameter.name] = parameter.default
-    operation_id = function.__name__
-    if operation_id in _OPERATIONS:
-        existing = _OPERATIONS[operation_id]
-        raise ValueError(
-            f"Duplicate @code function name {operation_id!r}: "
-            f"{existing.qualified_id!r} and "
-            f"{f'{function.__module__}.{function.__qualname__}'!r}. "
-            "@code function names must be globally unique."
-        )
-    _OPERATIONS[operation_id] = RegisteredOperation(
-        id=operation_id,
-        function=function,
-        module=function.__module__,
-        name=function.__name__,
-        description=summary,
-        inputs=tuple(inputs),
-        defaults=defaults,
-        output_type=_type_name(hints["return"]),
-        output_description=result
-    )
-    facade = sys.modules.get("llm_geo.ops")
-    if facade is not None:
-        setattr(facade, function.__name__, function)
-    return function
+        facade = sys.modules.get("llm_geo.ops")
+        if facade is not None:
+            setattr(facade, function.__name__, function)
+        return function
+
+    return decorator
 
 
 def operation_aliases(operation: RegisteredOperation) -> tuple[str, ...]:

@@ -4,6 +4,11 @@
 The historical filename is retained as a familiar development entry point. Unlike
 the previous implementation, generation reads OpenAPI directly and does not create
 or reverse-engineer an ``openapi-python-client`` package.
+
+Each operation's ``@code`` `kind` (retrieval/transformation/synthesis) and whether its response
+should be converted to a GeoDataFrame are inferred by an LLM
+(`llm_geo.operations.openapi.classify.classify_operations`) rather than guessed from HTTP method
+or schema shape -- neither reliably indicates either for arbitrary third-party APIs.
 """
 
 from __future__ import annotations
@@ -13,6 +18,8 @@ import os
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from langchain_core.language_models.chat_models import BaseChatModel
 
 from llm_geo.operations.openapi.generator import (
     DEFAULT_OUTPUT_DIRECTORY,
@@ -74,9 +81,16 @@ def load_openapi_spec(server: dict[str, Any]) -> tuple[dict[str, Any], str]:
 
 
 def ensure_openapi_operations_synced(
-    *, output_directory: Path = DEFAULT_OUTPUT_DIRECTORY, force: bool = False
+    *,
+    output_directory: Path = DEFAULT_OUTPUT_DIRECTORY,
+    force: bool = False,
+    classifier_model: BaseChatModel | None = None,
 ) -> None:
-    """Fetch every configured server and generate validated operation modules."""
+    """Fetch every configured server and generate validated operation modules.
+
+    `classifier_model` overrides the LLM used to infer each operation's `kind` and GeoJSON-ness
+    (see `generate_openapi_operations`); defaults to `llm_geo.llm.get_model()`.
+    """
     for server in OPENAPI_SERVERS:
         service = str(server["service"])
         api_key_environment = server.get("api_key_environment")
@@ -98,6 +112,7 @@ def ensure_openapi_operations_synced(
             auth_header=auth_header,
             auth_scheme=auth_scheme,
             force=force,
+            classifier_model=classifier_model,
         )
         state = "generated" if result.changed else "up to date"
         print(f"{service}: {state} ({len(result.operation_ids)} operations)")
