@@ -29,7 +29,9 @@ columns and geometry kind. The implementer sees ONLY this, so be specific.
   * `fields` (REQUIRED for every dict port): the dict's exact contract, one entry per key: \
 key name -> {type, description}. The key type is one of str, int, float, bool, dict, list[str], \
 list[int], list[float], list[dict]. Enumerate every key the consumer needs -- implementations \
-are validated key by key against this contract.
+are validated key by key against this contract, and undeclared keys are rejected. `fields` \
+describe the keys INSIDE the port's value: never repeat the port's own name as its only field \
+(a port `coordinates` has fields like lat/lon, not a field `coordinates`).
   * `example` (optional): a realistic literal sample value for scalar/dict ports, never for \
 GeoDataFrame. Provide one whenever you can -- it becomes the value the implementation is tested \
 against. A dict example must match the declared `fields`.
@@ -157,12 +159,26 @@ def wiring_errors(dag: DAGSpec) -> list[str]:
 
 
 def port_field_errors(dag: DAGSpec) -> list[str]:
-    """Every dict output of a custom (non-registry) node must declare its exact key contract."""
-    return [
-        f"node '{node.id}': dict output '{name}' must declare `fields` (one entry per key)"
-        for node in dag.nodes if not node.registry_id
-        for name, port in node.outputs.items() if port.type == "dict" and not port.fields
-    ]
+    """Every dict output of a custom (non-registry) node must declare its exact key contract,
+    and the contract must describe the value's real keys -- not wrap the value in itself."""
+    errors = []
+    for node in dag.nodes:
+        if node.registry_id:
+            continue
+        for name, port in node.outputs.items():
+            if port.type != "dict":
+                continue
+            if not port.fields:
+                errors.append(
+                    f"node '{node.id}': dict output '{name}' must declare `fields` (one entry per key)"
+                )
+            elif set(port.fields) == {name}:
+                errors.append(
+                    f"node '{node.id}': dict output '{name}' declares a single field also named "
+                    f"'{name}' -- do not wrap the value in itself; declare the value's real keys "
+                    f"(e.g. lat, lon) directly in `fields`"
+                )
+    return errors
 
 
 def align_edge_ports(dag: DAGSpec) -> None:

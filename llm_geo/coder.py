@@ -24,10 +24,16 @@ Your module must define EXACTLY this signature (same parameter names, same annot
 
     {signature}
 
-where `Output` is a TypedDict you define in the same module via
-`from typing_extensions import TypedDict`, with one key per declared output. Give every key the
-most precise type you can commit to (e.g. `total_count: int`, `names: list[str]`,
-`features: gpd.GeoDataFrame`) -- the returned value is validated against your annotation.
+and define the return contract with EXACTLY these TypedDicts, copied verbatim into your module
+(import via `from typing_extensions import TypedDict`):
+
+{output_types}
+
+`run` returns an `Output`: the outer dict has one key per declared output and nothing else.
+NEVER add a wrapper level. For a dict output `foo` with declared keys `lat`, `lon`, return
+{{"foo": {{"lat": ..., "lon": ...}}}} -- NOT {{"foo": {{"foo": {{"lat": ...}}}}}}. Undeclared
+keys inside a field-typed dict output are rejected. You may refine a plain `dict` or
+`list[dict]` leaf with a more precise TypedDict of your own, but never rename or re-nest keys.
 
 Inputs (passed as keyword arguments):
 {inputs}
@@ -61,6 +67,27 @@ Common pitfalls to avoid:
 
 Use the `contract_test` tool to run your code against synthetic inputs. Iterate until it reports
 PASS, then return the final NodeImplementation. Never finalize without a PASS."""
+
+
+def _camel(name: str) -> str:
+    return "".join(part.capitalize() for part in name.split("_") if part)
+
+
+def render_output_types(node: NodeSpec) -> str:
+    """The exact TypedDict definitions for the node's return value, derived from the output
+    ports so the coder cannot invent an extra nesting level around a dict port."""
+    blocks, output_fields = [], []
+    for name, port in node.outputs.items():
+        fields = port.fields or {}
+        if port.type == "dict" and fields and all(k.isidentifier() for k in fields):
+            class_name = _camel(name)
+            body = "\n".join(f"        {key}: {field.type}" for key, field in fields.items())
+            blocks.append(f"    class {class_name}(TypedDict):\n{body}")
+            output_fields.append(f"        {name}: {class_name}")
+        else:
+            output_fields.append(f"        {name}: {ANNOTATION_BY_PORT_TYPE[port.type]}")
+    blocks.append("    class Output(TypedDict):\n" + ("\n".join(output_fields) or "        pass"))
+    return "\n\n".join(blocks)
 
 
 def render_signature(node: NodeSpec) -> str:
@@ -135,7 +162,7 @@ def implement_node(
     """
     system_prompt = SYSTEM_PROMPT.format(
         id=node.id, kind=node.kind.value, description=node.description,
-        signature=render_signature(node),
+        signature=render_signature(node), output_types=render_output_types(node),
         inputs=render_ports(node.inputs), outputs=render_ports(node.outputs),
         params=render_params(node.params),
     )

@@ -51,14 +51,24 @@ def field_type_ok(value: Any, type_name: str) -> bool:
 
 
 def dict_field_errors(label: str, port: Any, value: Mapping) -> list[str]:
-    """Check a dict value against the port's declared per-key field contract."""
+    """Check a dict value against the port's declared per-key field contract: every declared
+    key present with its type, and no undeclared keys (which usually signal an accidental
+    extra wrapper level around the value)."""
+    if not port.fields:
+        return []
     errors = []
-    for name, field in (port.fields or {}).items():
+    for name, field in port.fields.items():
         if name not in value:
             errors.append(f"{label}: missing declared key '{name}'")
         elif not field_type_ok(value[name], field.type):
             errors.append(
                 f"{label}: key '{name}' must be {field.type}, got {type(value[name]).__name__}"
+            )
+    for name in value:
+        if name not in port.fields:
+            errors.append(
+                f"{label}: undeclared key '{name}' -- the value must have exactly the keys "
+                f"{sorted(port.fields)}, with no extra wrapper level"
             )
     return errors
 

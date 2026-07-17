@@ -171,6 +171,54 @@ def test_output_dict_fields_are_enforced_key_by_key():
     assert run_contract(node, code("{'count': 1, 'names': ['a', 'b']}")).ok
 
 
+def test_double_nested_dict_output_is_rejected():
+    # The port value must have the declared keys directly -- an accidental extra wrapper
+    # level ({"coordinates": {"coordinates": {...}}}) fails with a pointed message.
+    node = NodeSpec(
+        id="geocode", kind=NodeKind.transformation, description="d",
+        inputs={"place": "str"},
+        outputs={"coordinates": port("dict", fields={
+            "lat": FieldSpec(type="float", description="latitude"),
+            "lon": FieldSpec(type="float", description="longitude"),
+        })},
+    )
+    nested = (
+        "def run(place: str) -> dict:\n"
+        "    coords = {'coordinates': {'lat': 52.5, 'lon': 13.4}}\n"
+        "    return {'coordinates': coords}\n"
+    )
+    result = run_contract(node, nested)
+    assert not result.ok
+    assert "missing declared key 'lat'" in result.error
+    assert "undeclared key 'coordinates'" in result.error and "no extra wrapper level" in result.error
+
+    flat = (
+        "def run(place: str) -> dict:\n"
+        "    return {'coordinates': {'lat': 52.5, 'lon': 13.4}}\n"
+    )
+    assert run_contract(node, flat).ok
+
+
+def test_render_output_types_shows_exact_return_contract():
+    from llm_geo.coder import render_output_types
+    node = NodeSpec(
+        id="geocode", kind=NodeKind.transformation, description="d",
+        outputs={
+            "coordinates": port("dict", fields={
+                "lat": FieldSpec(type="float", description="latitude"),
+                "lon": FieldSpec(type="float", description="longitude"),
+            }),
+            "features": port("GeoDataFrame"),
+        },
+    )
+    rendered = render_output_types(node)
+    assert "class Coordinates(TypedDict):" in rendered
+    assert "lat: float" in rendered and "lon: float" in rendered
+    assert "class Output(TypedDict):" in rendered
+    assert "coordinates: Coordinates" in rendered
+    assert "features: gpd.GeoDataFrame" in rendered
+
+
 def test_geodataframe_inside_return_typed_dict_validates():
     # Regression: a TypedDict defined in exec'd node code defers pydantic's schema build;
     # without an explicit rebuild the fine validator silently disappeared.

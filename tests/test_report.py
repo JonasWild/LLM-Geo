@@ -150,6 +150,14 @@ def test_dict_outputs_of_custom_nodes_require_fields():
     ])
     assert port_field_errors(registry_bound) == []
 
+    # Wrapper smell: the port's only field repeats the port's own name.
+    wrapped = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.synthesis, description="a",
+                 outputs={"coordinates": dict_port({"coordinates": "dict"})}),
+    ])
+    errors = port_field_errors(wrapped)
+    assert len(errors) == 1 and "do not wrap the value in itself" in errors[0]
+
 
 def test_align_edge_ports_makes_producer_definition_authoritative():
     producer_port = dict_port({"total": "int"}, description="authoritative", example={"total": 3})
