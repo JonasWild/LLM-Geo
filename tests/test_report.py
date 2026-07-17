@@ -1,7 +1,7 @@
-"""Offline tests for report rendering and plan single-graph validation: no LLM calls involved."""
-from llm_geo import planner
+"""Offline tests for report rendering and plan validation: no LLM calls involved."""
+from llm_geo import planner, registry
 from llm_geo.models import DAGSpec, ExecutionResult, NodeKind, NodeSpec, RunReport
-from llm_geo.planner import single_graph_errors
+from llm_geo.planner import registry_errors, single_graph_errors, wiring_errors
 from llm_geo.report import full_report, single_run_markdown
 
 
@@ -65,6 +65,74 @@ def test_single_graph_errors():
     dupe = make_dag()
     dupe.nodes.append(dupe.nodes[0].model_copy())
     assert any("duplicate node id 'load'" in e for e in single_graph_errors(dupe))
+
+
+def test_wiring_errors():
+    assert wiring_errors(make_dag()) == []
+
+    # Same-named edge with incompatible coarse types.
+    mismatch = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.retrieval, description="a", outputs={"features": "GeoDataFrame"}),
+        NodeSpec(id="b", kind=NodeKind.synthesis, description="b", depends_on=["a"],
+                 inputs={"features": "dict"}, outputs={"report": "dict"}),
+    ])
+    errors = wiring_errors(mismatch)
+    assert len(errors) == 1 and "expects dict but 'a' outputs GeoDataFrame" in errors[0]
+
+    # int output feeding a float input is fine.
+    widening = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.transformation, description="a", outputs={"count": "int"}),
+        NodeSpec(id="b", kind=NodeKind.synthesis, description="b", depends_on=["a"],
+                 inputs={"count": "float"}, outputs={"report": "dict"}),
+    ])
+    assert wiring_errors(widening) == []
+
+    # Input fed by nothing: no dependency output, no param.
+    unfed = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.retrieval, description="a", outputs={"features": "GeoDataFrame"}),
+        NodeSpec(id="b", kind=NodeKind.synthesis, description="b", depends_on=["a"],
+                 inputs={"features": "GeoDataFrame", "threshold": "float"}, outputs={"report": "dict"}),
+    ])
+    errors = wiring_errors(unfed)
+    assert len(errors) == 1 and "'threshold' is fed by no dependency output and no param" in errors[0]
+
+    # Param literal of the wrong coarse type.
+    bad_param = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.retrieval, description="a", outputs={"features": "GeoDataFrame"}),
+        NodeSpec(id="b", kind=NodeKind.synthesis, description="b", depends_on=["a"],
+                 inputs={"features": "GeoDataFrame", "threshold": "float"},
+                 outputs={"report": "dict"}, params={"threshold": "high"}),
+    ])
+    errors = wiring_errors(bad_param)
+    assert len(errors) == 1 and "param literal is str" in errors[0]
+
+
+def test_registry_errors(monkeypatch):
+    monkeypatch.setitem(registry.REGISTRY, "fake_op", {
+        "kind": "retrieval", "description": "fake",
+        "inputs": {"query": "str"}, "outputs": {"features": "GeoDataFrame"},
+        "fn": lambda **kwargs: {"features": None},
+    })
+    ok = DAGSpec(task="t", nodes=[
+        NodeSpec(id="fetch", kind=NodeKind.retrieval, description="f", registry_id="fake_op",
+                 inputs={"query": "str"}, outputs={"features": "GeoDataFrame"},
+                 params={"query": "berlin"}),
+    ])
+    assert registry_errors(ok) == []
+
+    unknown = ok.model_copy(deep=True)
+    unknown.nodes[0].registry_id = "nope"
+    assert any("unknown registry_id 'nope'" in e for e in registry_errors(unknown))
+
+    drifted = DAGSpec(task="t", nodes=[
+        NodeSpec(id="fetch", kind=NodeKind.retrieval, description="f", registry_id="fake_op",
+                 inputs={"place": "str", "query": "int"}, outputs={"stuff": "dict"}),
+    ])
+    errors = registry_errors(drifted)
+    assert any("has no input 'place'" in e for e in errors)
+    assert any("registry input 'query' has type str, not int" in e for e in errors)
+    assert any("outputs 'features', declare it" in e for e in errors)
+    assert any("has no output 'stuff'" in e for e in errors)
 
 
 def test_plan_retries_once_on_disconnected_dag(monkeypatch):

@@ -3,7 +3,7 @@ populated by `llm_geo/tools/public_data_providers.py`) into the id -> {kind, des
 inputs, outputs, fn} shape the planner/executor expect.
 
 Each ground-truth operation returns a single concrete value (`RegisteredOperation.output_type`).
-This maps that single value onto the named-output-dict convention `run(**inputs) -> dict` the
+This maps that single value onto the named-output-dict convention (`run` returning a dict) the
 rest of the pipeline (and LLM-generated custom nodes) use, via `_OUTPUT_NAME_BY_TYPE`.
 """
 from __future__ import annotations
@@ -38,7 +38,20 @@ REGISTRY: dict[str, dict[str, Any]] = {op.id: _adapt(op) for op in registered_op
 
 
 def catalog_text() -> str:
+    """Registry catalog for the planner prompt, rendered in the same name (type): description
+    port format the planner must emit for custom nodes."""
     lines = []
-    for rid, spec in REGISTRY.items():
-        lines.append(f"- {rid} [{spec['kind']}]: {spec['description']} inputs={spec['inputs']} outputs={spec['outputs']}")
+    for operation in registered_operations():
+        output_name = _OUTPUT_NAME_BY_TYPE.get(operation.output_type, "value")
+        inputs = "; ".join(
+            f"{name} ({type_name}"
+            + (f", default {operation.defaults[name]!r}" if name in operation.defaults else "")
+            + f"): {description}"
+            for name, type_name, description in operation.inputs
+        ) or "(none)"
+        lines.append(
+            f"- {operation.id} [{operation.kind}]: {operation.description}\n"
+            f"    inputs: {inputs}\n"
+            f"    output: {output_name} ({operation.output_type}): {operation.output_description}"
+        )
     return "\n".join(lines)

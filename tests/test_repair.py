@@ -8,10 +8,10 @@ from llm_geo.models import CodeEdit, DAGSpec, NodeCodeEdits, NodeKind, NodeSpec,
 from llm_geo.trace import Tracer
 
 
-def counting_code(marker_path: str, body: str) -> str:
+def counting_code(marker_path: str, params: str, body: str) -> str:
     """Node code that appends one char to `marker_path` per call (our call counter)."""
     return (
-        "def run(**inputs) -> dict:\n"
+        f"def run({params}) -> dict:\n"
         f"    open({marker_path!r}, 'a').write('x')\n"
         f"    {body}\n"
     )
@@ -43,15 +43,15 @@ def test_partial_reexecution_reuses_prior_outputs(tmp_path):
     tracer = Tracer(path=tmp_path / "trace.jsonl")
     a_marker = tmp_path / "a_calls"
     dag = chain_dag()
-    a_code = counting_code(str(a_marker), "return {'value': {'n': 1}}")
-    bad_b = "def run(**inputs) -> dict:\n    raise ValueError('kaboom')\n"
-    c_code = "def run(**inputs) -> dict:\n    return {'report': inputs['result']}\n"
+    a_code = counting_code(str(a_marker), "", "return {'value': {'n': 1}}")
+    bad_b = "def run(value: dict) -> dict:\n    raise ValueError('kaboom')\n"
+    c_code = "def run(result: dict) -> dict:\n    return {'report': dict(result)}\n"
 
     first = execute(dag, impls(a_code, bad_b, c_code), tracer)
     assert not first.success and first.failing_node_ids == ["b"]
     assert calls(a_marker) == 1
 
-    good_b = "def run(**inputs) -> dict:\n    return {'result': inputs['value']}\n"
+    good_b = "def run(value: dict) -> dict:\n    return {'result': dict(value)}\n"
     second = execute(
         dag, impls(a_code, good_b, c_code), tracer,
         prior_outputs=first.outputs, stale_node_ids=frozenset(first.failing_node_ids),
@@ -67,9 +67,9 @@ def test_prior_outputs_downstream_of_stale_are_rerun(tmp_path):
     tracer = Tracer(path=tmp_path / "trace.jsonl")
     c_marker = tmp_path / "c_calls"
     dag = chain_dag()
-    a_code = "def run(**inputs) -> dict:\n    return {'value': {'n': 2}}\n"
-    b_code = "def run(**inputs) -> dict:\n    return {'result': inputs['value']}\n"
-    c_code = counting_code(str(c_marker), "return {'report': inputs['result']}")
+    a_code = "def run() -> dict:\n    return {'value': {'n': 2}}\n"
+    b_code = "def run(value: dict) -> dict:\n    return {'result': dict(value)}\n"
+    c_code = counting_code(str(c_marker), "result: dict", "return {'report': dict(result)}")
 
     # Prior outputs cover ALL nodes, but b is stale -> c (downstream) must re-run, a is cached.
     prior = {"a": {"value": {"n": 2}}, "b": {"result": {"n": 0}}, "c": {"report": {"n": 0}}}
@@ -96,14 +96,14 @@ def test_apply_edits():
 def test_repair_via_edits(monkeypatch):
     node = NodeSpec(id="calc", kind=NodeKind.synthesis, description="calc",
                     inputs={"value": "dict"}, outputs={"report": "dict"})
-    previous_code = "def run(**inputs) -> dict:\n    return {'report': inputs['missing_key']}\n"
+    previous_code = "def run(value: dict) -> dict:\n    return {'report': value['missing_key']}\n"
     prompts = []
 
     def fake_agent(model, system_prompt, user_content, schema, tools=None):
         prompts.append((system_prompt, user_content))
         assert schema is NodeCodeEdits
         return NodeCodeEdits(node_id="calc", edits=[
-            CodeEdit(find="inputs['missing_key']", replace="{'n': len(inputs)}"),
+            CodeEdit(find="value['missing_key']", replace="{'n': len(value)}"),
         ], notes="use available inputs"), []
 
     monkeypatch.setattr(coder, "run_structured_agent", fake_agent)
@@ -114,7 +114,7 @@ def test_repair_via_edits(monkeypatch):
     })
 
     assert attempts == 1
-    assert "missing_key" not in impl.code and "{'n': len(inputs)}" in impl.code
+    assert "missing_key" not in impl.code and "{'n': len(value)}" in impl.code
     system_prompt, user_content = prompts[0]
     assert "REPAIRING" in system_prompt
     assert previous_code.strip() in user_content  # previous code shown for editing
@@ -123,7 +123,7 @@ def test_repair_via_edits(monkeypatch):
 
 def test_repair_recovers_from_bad_edits(monkeypatch):
     node = NodeSpec(id="calc", kind=NodeKind.synthesis, description="calc", outputs={"report": "dict"})
-    previous_code = "def run(**inputs) -> dict:\n    return {'wrong': 1}\n"
+    previous_code = "def run() -> dict:\n    return {'wrong': 1}\n"
     responses = [
         NodeCodeEdits(node_id="calc", edits=[CodeEdit(find="does not exist", replace="x")]),
         NodeCodeEdits(node_id="calc", edits=[CodeEdit(find="{'wrong': 1}", replace="{'report': {}}")]),
@@ -148,7 +148,7 @@ def test_implement_without_repair_context_unchanged(monkeypatch):
 
     def fake_agent(model, system_prompt, user_content, schema, tools=None):
         assert schema is NodeImplementation
-        return NodeImplementation(node_id="calc", code="def run(**inputs) -> dict:\n    return {'report': {}}\n"), []
+        return NodeImplementation(node_id="calc", code="def run() -> dict:\n    return {'report': {}}\n"), []
 
     monkeypatch.setattr(coder, "run_structured_agent", fake_agent)
     impl, attempts = implement_node(node, model=None)

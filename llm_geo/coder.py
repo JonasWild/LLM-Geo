@@ -1,5 +1,6 @@
-"""Per-node implementation: a deep agent writes `run(**inputs)->dict` and repairs it until its
-contract test (run against synthetic inputs, no upstream nodes involved) passes.
+"""Per-node implementation: a deep agent writes a typed `run(<named inputs/params>) -> Output`
+function and repairs it until its contract test (signature enforcement plus a run against
+synthetic inputs, no upstream nodes involved) passes.
 """
 from __future__ import annotations
 
@@ -7,24 +8,39 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import tool
 
 from .artifacts import RunArtifacts, transcript_markdown
-from .contracts import run_contract
+from .contracts import ANNOTATION_BY_PORT_TYPE, run_contract
 from .llm import retry_on_rate_limit
-from .models import CodeEdit, NodeCodeEdits, NodeImplementation, NodeSpec
+from .models import CodeEdit, NodeCodeEdits, NodeImplementation, NodeSpec, PortSpec
 from .structured_output import run_structured_agent
 
-SYSTEM_PROMPT = """You implement one DAG node as a single python function:
-
-    def run(**inputs) -> dict: ...
+SYSTEM_PROMPT = """You implement one DAG node as a single typed python function.
 
 Node id: {id}
 Kind: {kind}
 Description: {description}
-Inputs (name: type): {inputs}
-Outputs (name: type, must all be present as dict keys returned by run): {outputs}
-Params (static literals also available as kwargs): {params}
 
-Available libraries you may `import` inside your code: geopandas, shapely, json, math, datetime.
-A `GeoDataFrame` type is a geopandas.GeoDataFrame with an active geometry column and CRS set. If
+Your module must define EXACTLY this signature (same parameter names, same annotations, no
+*args/**kwargs -- it is enforced):
+
+    {signature}
+
+where `Output` is a TypedDict you define in the same module via
+`from typing_extensions import TypedDict`, with one key per declared output. Give every key the
+most precise type you can commit to (e.g. `total_count: int`, `names: list[str]`,
+`features: gpd.GeoDataFrame`) -- the returned value is validated against your annotation.
+
+Inputs (passed as keyword arguments):
+{inputs}
+
+Params (static literals, passed as keyword arguments with exactly these values):
+{params}
+
+Outputs (keys of the returned dict):
+{outputs}
+
+Available libraries you may `import` inside your code: geopandas, shapely, json, math, datetime,
+typing, typing_extensions.
+A `GeoDataFrame` value is a geopandas.GeoDataFrame with an active geometry column and CRS set. If
 this node is a `retrieval` node, every GeoDataFrame-typed output must also carry provenance
 metadata in `output_value.attrs["provenance"]` (a dict).
 
@@ -41,6 +57,28 @@ Common pitfalls to avoid:
 
 Use the `contract_test` tool to run your code against synthetic inputs. Iterate until it reports
 PASS, then return the final NodeImplementation. Never finalize without a PASS."""
+
+
+def render_signature(node: NodeSpec) -> str:
+    """The exact `run` stub the coder must implement, derived from inputs + params."""
+    parts = [f"{name}: {ANNOTATION_BY_PORT_TYPE[port.type]}" for name, port in node.inputs.items()]
+    parts += [
+        f"{name}: {type(value).__name__}"
+        for name, value in node.params.items() if name not in node.inputs
+    ]
+    return f"def run({', '.join(parts)}) -> Output:"
+
+
+def render_ports(ports: dict[str, PortSpec]) -> str:
+    lines = []
+    for name, port in ports.items():
+        example = f", e.g. {port.example!r}" if port.example is not None else ""
+        lines.append(f"- {name} ({port.type}{example}): {port.description}")
+    return "\n".join(lines) or "- (none)"
+
+
+def render_params(params: dict) -> str:
+    return "\n".join(f"- {name} = {value!r}" for name, value in params.items()) or "- (none)"
 
 REPAIR_INSTRUCTIONS = """
 
@@ -91,7 +129,9 @@ def implement_node(
     """
     system_prompt = SYSTEM_PROMPT.format(
         id=node.id, kind=node.kind.value, description=node.description,
-        inputs=node.inputs, outputs=node.outputs, params=node.params,
+        signature=render_signature(node),
+        inputs=render_ports(node.inputs), outputs=render_ports(node.outputs),
+        params=render_params(node.params),
     )
     round_no = artifacts.begin_node_round(node, system_prompt) if artifacts else 0
     tools = [_contract_tool(node)]

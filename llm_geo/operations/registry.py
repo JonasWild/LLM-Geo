@@ -58,6 +58,13 @@ class RegisteredOperation:
 _OPERATIONS: dict[str, RegisteredOperation] = {}
 
 
+def _annotation_name(annotation: object) -> str:
+    """Render an annotation as a clean type name: `GeoDataFrame`, not `<class 'geopandas...'>`."""
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")
+
+
 def code(
     *, kind: Literal["retrieval", "transformation", "synthesis"]
 ) -> Callable[[Callable[..., object]], Callable[..., object]]:
@@ -87,7 +94,7 @@ def code(
             if parameter.name not in arguments:
                 raise TypeError(f"Docstring Args section is missing {parameter.name!r}")
             inputs.append(
-                (parameter.name, str(annotation).replace("typing.", ""), arguments[parameter.name])
+                (parameter.name, _annotation_name(annotation), arguments[parameter.name])
             )
             if parameter.default is not inspect.Signature.empty:
                 defaults[parameter.name] = parameter.default
@@ -109,7 +116,7 @@ def code(
             description=summary,
             inputs=tuple(inputs),
             defaults=defaults,
-            output_type=str(hints["return"]),
+            output_type=_annotation_name(hints["return"]),
             output_description=result
         )
         facade = sys.modules.get("llm_geo.ops")

@@ -2,9 +2,29 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
+
+PortType = Literal["str", "int", "float", "bool", "dict", "GeoDataFrame"]
+PORT_TYPES: tuple[str, ...] = ("str", "int", "float", "bool", "dict", "GeoDataFrame")
+
+JSONValue = str | int | float | bool | dict | list | None
+
+
+def example_fits(type_name: str, value: Any) -> bool:
+    match type_name:
+        case "str":
+            return isinstance(value, str)
+        case "int":
+            return isinstance(value, int) and not isinstance(value, bool)
+        case "float":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        case "bool":
+            return isinstance(value, bool)
+        case "dict":
+            return isinstance(value, dict)
+    return False  # GeoDataFrame: no literal example possible
 
 
 class NodeKind(str, Enum):
@@ -13,18 +33,48 @@ class NodeKind(str, Enum):
     synthesis = "synthesis"
 
 
+class PortSpec(BaseModel):
+    """One named input or output of a node: coarse type plus the semantics the coder needs."""
+
+    type: PortType
+    description: str = Field(
+        min_length=1,
+        description="what this value means: semantics, units, expected dict keys / GeoDataFrame columns",
+    )
+    example: JSONValue = Field(
+        default=None,
+        description="realistic literal sample value; scalars and dicts only, never for GeoDataFrame",
+    )
+
+    @model_validator(mode="after")
+    def _drop_incoherent_example(self) -> "PortSpec":
+        # A bad example on an optional nicety must not invalidate an otherwise good plan.
+        if self.example is not None and not example_fits(self.type, self.example):
+            self.example = None
+        return self
+
+
+def _coerce_port(value: Any) -> Any:
+    if isinstance(value, str):  # legacy shorthand: plain type name
+        return {"type": value, "description": "(no description provided)"}
+    return value
+
+
+Ports = dict[str, Annotated[PortSpec, BeforeValidator(_coerce_port)]]
+
+
 class NodeSpec(BaseModel):
     id: str = Field(description="unique snake_case node id")
     kind: NodeKind
     description: str = Field(description="what the node does, precise enough to implement")
     depends_on: list[str] = Field(default_factory=list)
-    inputs: dict[str, str] = Field(
+    inputs: Ports = Field(
         default_factory=dict,
-        description="input name -> type, one of str|int|float|bool|dict|GeoDataFrame",
+        description="input name -> port spec (type, description, optional example)",
     )
-    outputs: dict[str, str] = Field(
+    outputs: Ports = Field(
         default_factory=dict,
-        description="output name -> type, same vocabulary as inputs",
+        description="output name -> port spec, same shape as inputs",
     )
     params: dict[str, Any] = Field(default_factory=dict, description="static literal parameters")
     registry_id: str | None = Field(
@@ -39,7 +89,9 @@ class DAGSpec(BaseModel):
 
 class NodeImplementation(BaseModel):
     node_id: str
-    code: str = Field(description="python source defining a function `run(**inputs) -> dict`")
+    code: str = Field(
+        description="python source defining a typed function `run(<named inputs/params>) -> Output`"
+    )
     notes: str = ""
 
 

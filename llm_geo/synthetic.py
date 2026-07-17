@@ -1,10 +1,13 @@
 """Synthetic input generation so a node's contract can be tested without running upstream nodes."""
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import geopandas as gpd
 from shapely.geometry import Point
+
+from .models import PortSpec
 
 
 def _sample_gdf() -> gpd.GeoDataFrame:
@@ -13,12 +16,18 @@ def _sample_gdf() -> gpd.GeoDataFrame:
     )
 
 
-def make_value(type_name: str) -> Any:
-    match type_name:
+def make_value(port: PortSpec) -> Any:
+    # PortSpec guarantees a present example matches the declared type, so prefer it: the
+    # contract test then runs against the planner's intended realistic value.
+    if port.example is not None:
+        return float(port.example) if port.type == "float" else deepcopy(port.example)
+    match port.type:
         case "GeoDataFrame":
             return _sample_gdf()
-        case "float" | "int":
+        case "float":
             return 1.5
+        case "int":
+            return 2
         case "bool":
             return True
         case "dict":
@@ -27,5 +36,5 @@ def make_value(type_name: str) -> Any:
             return "synthetic-string"
 
 
-def make_inputs(inputs: dict[str, str]) -> dict[str, Any]:
-    return {name: make_value(type_name) for name, type_name in inputs.items()}
+def make_inputs(inputs: dict[str, PortSpec]) -> dict[str, Any]:
+    return {name: make_value(port) for name, port in inputs.items()}

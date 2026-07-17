@@ -6,7 +6,7 @@ import traceback
 
 import networkx as nx
 
-from .contracts import compile_node
+from .contracts import compile_node, input_errors, output_errors
 from .models import DAGSpec, ExecutionResult, NodeImplementation, NodeSpec
 from .registry import REGISTRY
 from .trace import Tracer
@@ -19,7 +19,7 @@ def build_graph(dag: DAGSpec) -> nx.DiGraph:
     return g
 
 
-def _resolve_inputs(node: NodeSpec, outputs: dict[str, dict]) -> dict:
+def resolve_inputs(node: NodeSpec, outputs: dict[str, dict]) -> dict:
     """An input is fed by whichever dependency produced an output of the same name. If several
     inputs/dependencies are left unmatched by name (e.g. two dependencies both output `features`),
     pair the remaining ones positionally in `depends_on` order.
@@ -45,7 +45,7 @@ def _resolve_inputs(node: NodeSpec, outputs: dict[str, dict]) -> dict:
 def _callable_for(node: NodeSpec, implementations: dict[str, NodeImplementation]):
     if node.registry_id:
         return REGISTRY[node.registry_id]["fn"]
-    return compile_node(implementations[node.id].code)
+    return compile_node(implementations[node.id].code, node)
 
 
 def execute(
@@ -91,8 +91,19 @@ def execute(
         try:
             with tracer.span("exec", node_id):
                 fn = _callable_for(node, implementations)
-                node_inputs[node_id] = _resolve_inputs(node, outputs)
-                outputs[node_id] = fn(**node_inputs[node_id])
+                node_inputs[node_id] = resolve_inputs(node, outputs)
+                if problems := input_errors(node, node_inputs[node_id]):
+                    raise ValueError(
+                        f"input contract of node '{node_id}' violated:\n- " + "\n- ".join(problems)
+                    )
+                result_value = fn(**node_inputs[node_id])
+                # Validate at the producing node, so a wrongly-shaped output is attributed
+                # here instead of crashing an innocent downstream consumer.
+                if problems := output_errors(node, result_value):
+                    raise TypeError(
+                        f"output contract of node '{node_id}' violated:\n- " + "\n- ".join(problems)
+                    )
+                outputs[node_id] = dict(result_value)
         except Exception as exc:
             node_status[node_id] = "error"
             node_duration_ms[node_id] = (time.monotonic() - t0) * 1000
@@ -104,17 +115,6 @@ def execute(
             )
         node_status[node_id] = "ok"
         node_duration_ms[node_id] = (time.monotonic() - t0) * 1000
-
-    for node_id in (n for n in order if g.out_degree(n) == 0):
-        missing = [name for name in by_id[node_id].outputs if name not in outputs.get(node_id, {})]
-        if missing:
-            node_status[node_id] = "error"
-            return ExecutionResult(
-                success=False, outputs=outputs, failing_node_ids=[node_id],
-                error=f"terminal node '{node_id}' missing outputs {missing}",
-                node_order=node_order, node_status=node_status, node_duration_ms=node_duration_ms,
-                node_inputs=node_inputs,
-            )
 
     return ExecutionResult(
         success=True, outputs=outputs,
