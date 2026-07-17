@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class NodeKind(str, Enum):
@@ -13,19 +13,40 @@ class NodeKind(str, Enum):
     synthesis = "synthesis"
 
 
+PortType = Literal["str", "int", "float", "bool", "dict", "GeoDataFrame"]
+
+
+class PortSpec(BaseModel):
+    """Full contract of one named input/output value of a node."""
+
+    type: PortType
+    description: str = Field(default="", description="semantic meaning of the value, incl. units")
+    columns: dict[str, str] | None = Field(
+        default=None, description="GeoDataFrame only: required column name -> dtype (str|int|float|bool)"
+    )
+    geometry: Literal["Point", "LineString", "Polygon", "any"] | None = Field(
+        default=None, description="GeoDataFrame only: expected geometry type"
+    )
+    crs: str | None = Field(default=None, description="GeoDataFrame only: expected CRS, e.g. 'EPSG:4326'")
+    example: Any | None = Field(default=None, description="realistic example value (non-GeoDataFrame ports)")
+
+
+def _coerce_ports(value: Any) -> Any:
+    """Accept the legacy `name -> type-string` shorthand and lift it into PortSpecs."""
+    if isinstance(value, dict):
+        return {k: {"type": v} if isinstance(v, str) else v for k, v in value.items()}
+    return value
+
+
 class NodeSpec(BaseModel):
     id: str = Field(description="unique snake_case node id")
     kind: NodeKind
     description: str = Field(description="what the node does, precise enough to implement")
     depends_on: list[str] = Field(default_factory=list)
-    inputs: dict[str, str] = Field(
-        default_factory=dict,
-        description="input name -> type, one of str|int|float|bool|dict|GeoDataFrame",
-    )
-    outputs: dict[str, str] = Field(
-        default_factory=dict,
-        description="output name -> type, same vocabulary as inputs",
-    )
+    inputs: dict[str, PortSpec] = Field(default_factory=dict, description="input name -> port spec")
+    outputs: dict[str, PortSpec] = Field(default_factory=dict, description="output name -> port spec")
+
+    _ports = field_validator("inputs", "outputs", mode="before")(_coerce_ports)
     params: dict[str, Any] = Field(default_factory=dict, description="static literal parameters")
     registry_id: str | None = Field(
         default=None, description="id of a trusted implementation from the tool registry, if one fits"

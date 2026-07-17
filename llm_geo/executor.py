@@ -5,7 +5,7 @@ import time
 
 import networkx as nx
 
-from .contracts import compile_node
+from .contracts import compile_node, validate_value
 from .models import DAGSpec, ExecutionResult, NodeImplementation, NodeSpec
 from .registry import REGISTRY
 from .trace import Tracer
@@ -18,17 +18,20 @@ def build_graph(dag: DAGSpec) -> nx.DiGraph:
     return g
 
 
-def _resolve_inputs(node: NodeSpec, outputs: dict[str, dict]) -> dict:
+def _resolve_inputs(node: NodeSpec, outputs: dict[str, dict]) -> tuple[dict, dict[str, str]]:
     """An input is fed by whichever dependency produced an output of the same name. If several
     inputs/dependencies are left unmatched by name (e.g. two dependencies both output `features`),
-    pair the remaining ones positionally in `depends_on` order.
+    pair the remaining ones positionally in `depends_on` order. Also returns which dependency
+    sourced each input, for blame attribution when an edge value fails validation.
     """
     resolved = dict(node.params)
+    sources: dict[str, str] = {}
     consumed, unresolved = set(), []
     for name in node.inputs:
         dep = next((d for d in node.depends_on if d not in consumed and name in outputs.get(d, {})), None)
         if dep is not None:
             resolved[name] = outputs[dep][name]
+            sources[name] = dep
             consumed.add(dep)
         elif name not in resolved:
             unresolved.append(name)
@@ -38,7 +41,25 @@ def _resolve_inputs(node: NodeSpec, outputs: dict[str, dict]) -> dict:
         dep_out = outputs.get(dep, {})
         if len(dep_out) == 1:
             resolved[name] = next(iter(dep_out.values()))
-    return resolved
+            sources[name] = dep
+    return resolved, sources
+
+
+def _validate_edge_inputs(node: NodeSpec, resolved: dict, sources: dict[str, str]) -> None:
+    """Check every declared input against its PortSpec before calling the node, so a wiring or
+    upstream-shape bug fails with a precise message (and blames the producer) instead of a stack
+    trace from inside the node."""
+    for name, port in node.inputs.items():
+        if name not in resolved:
+            raise ValueError(f"input '{name}' of node '{node.id}' has no source (params or dependencies)")
+        try:
+            validate_value(f"input {name!r}", port, resolved[name])
+        except Exception as exc:
+            producer = sources.get(name)
+            origin = f"produced by '{producer}'" if producer else "from params"
+            error = type(exc)(f"node '{node.id}': {exc} ({origin})")
+            error.blame = [producer or node.id]  # repair the node that produced the bad value
+            raise error from None
 
 
 def _callable_for(node: NodeSpec, implementations: dict[str, NodeImplementation]):
@@ -65,14 +86,17 @@ def execute(dag: DAGSpec, implementations: dict[str, NodeImplementation], tracer
         t0 = time.monotonic()
         try:
             with tracer.span("exec", node_id):
+                resolved, sources = _resolve_inputs(node, outputs)
+                _validate_edge_inputs(node, resolved, sources)
                 fn = _callable_for(node, implementations)
-                outputs[node_id] = fn(**_resolve_inputs(node, outputs))
+                outputs[node_id] = fn(**resolved)
         except Exception as exc:
             node_status[node_id] = "error"
             node_duration_ms[node_id] = (time.monotonic() - t0) * 1000
             return ExecutionResult(
-                success=False, outputs=outputs, failing_node_ids=[node_id], error=str(exc),
-                node_order=node_order, node_status=node_status, node_duration_ms=node_duration_ms,
+                success=False, outputs=outputs, failing_node_ids=getattr(exc, "blame", [node_id]),
+                error=str(exc), node_order=node_order, node_status=node_status,
+                node_duration_ms=node_duration_ms,
             )
         node_status[node_id] = "ok"
         node_duration_ms[node_id] = (time.monotonic() - t0) * 1000

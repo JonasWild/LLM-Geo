@@ -28,6 +28,7 @@ def _adapt(operation: RegisteredOperation) -> dict[str, Any]:
         "kind": operation.kind,
         "description": operation.description,
         "inputs": inputs,
+        "defaults": operation.defaults,
         "outputs": {output_name: operation.output_type},
         "fn": fn,
     }
@@ -38,6 +39,15 @@ REGISTRY: dict[str, dict[str, Any]] = {op.id: _adapt(op) for op in registered_op
 
 def catalog_text() -> str:
     lines = []
-    for rid, spec in REGISTRY.items():
-        lines.append(f"- {rid} [{spec['kind']}]: {spec['description']} inputs={spec['inputs']} outputs={spec['outputs']}")
+    for op in registered_operations():
+        inputs = ", ".join(
+            f"{name}: {type_name} ({description})"
+            + (f" [default={op.defaults[name]!r}]" if name in op.defaults else "")
+            for name, type_name, description in op.inputs
+        )
+        output_name = _OUTPUT_NAME_BY_TYPE.get(op.output_type, "value")
+        lines.append(
+            f"- {op.id} [{op.kind}]: {op.description} "
+            f"inputs=({inputs}) output={output_name}: {op.output_type} ({op.output_description})"
+        )
     return "\n".join(lines)
