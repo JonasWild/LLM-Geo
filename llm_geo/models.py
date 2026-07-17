@@ -12,7 +12,16 @@ PORT_TYPES: tuple[str, ...] = ("str", "int", "float", "bool", "dict", "GeoDataFr
 JSONValue = str | int | float | bool | dict | list | None
 
 
+FieldType = Literal[
+    "str", "int", "float", "bool", "dict",
+    "list[str]", "list[int]", "list[float]", "list[dict]",
+]
+
+
 def example_fits(type_name: str, value: Any) -> bool:
+    if type_name.startswith("list["):
+        inner = type_name[5:-1]
+        return isinstance(value, list) and all(example_fits(inner, item) for item in value)
     match type_name:
         case "str":
             return isinstance(value, str)
@@ -33,13 +42,24 @@ class NodeKind(str, Enum):
     synthesis = "synthesis"
 
 
+class FieldSpec(BaseModel):
+    """The contract of one key inside a dict-typed port."""
+
+    type: FieldType
+    description: str = Field(min_length=1, description="what this key's value means")
+
+
 class PortSpec(BaseModel):
     """One named input or output of a node: coarse type plus the semantics the coder needs."""
 
     type: PortType
     description: str = Field(
         min_length=1,
-        description="what this value means: semantics, units, expected dict keys / GeoDataFrame columns",
+        description="what this value means: semantics, units, expected GeoDataFrame columns",
+    )
+    fields: dict[str, FieldSpec] | None = Field(
+        default=None,
+        description="dict ports only: the dict's exact contract, one entry per key",
     )
     example: JSONValue = Field(
         default=None,
@@ -47,10 +67,17 @@ class PortSpec(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _drop_incoherent_example(self) -> "PortSpec":
-        # A bad example on an optional nicety must not invalidate an otherwise good plan.
+    def _drop_incoherent_extras(self) -> "PortSpec":
+        # Bad optional niceties must not invalidate an otherwise good plan.
+        if self.type != "dict":
+            self.fields = None
         if self.example is not None and not example_fits(self.type, self.example):
             self.example = None
+        if self.example is not None and self.fields and not all(
+            name in self.example and example_fits(field.type, self.example[name])
+            for name, field in self.fields.items()
+        ):
+            self.example = None  # the field contract is authoritative over a conflicting example
         return self
 
 

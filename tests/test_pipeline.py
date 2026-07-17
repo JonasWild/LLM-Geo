@@ -5,7 +5,7 @@ from shapely.geometry import Point
 from llm_geo import registry
 from llm_geo.contracts import run_contract
 from llm_geo.executor import execute
-from llm_geo.models import DAGSpec, NodeImplementation, NodeKind, NodeSpec, PortSpec
+from llm_geo.models import DAGSpec, FieldSpec, NodeImplementation, NodeKind, NodeSpec, PortSpec
 from llm_geo.synthetic import make_inputs
 from llm_geo.trace import Tracer
 
@@ -75,6 +75,27 @@ def test_make_inputs_prefers_planner_examples():
     assert inputs["filters"] == {"min_capacity": 10}
 
 
+def test_make_inputs_builds_dicts_from_declared_fields():
+    spec = port("dict", fields={
+        "count": FieldSpec(type="int", description="n"),
+        "names": FieldSpec(type="list[str]", description="names"),
+        "nested": FieldSpec(type="dict", description="free-form leaf"),
+    })
+    value = make_inputs({"report": spec})["report"]
+    assert isinstance(value["count"], int) and not isinstance(value["count"], bool)
+    assert isinstance(value["names"], list) and all(isinstance(x, str) for x in value["names"])
+    assert isinstance(value["nested"], dict)
+
+
+def test_fields_are_sanitized_on_the_port():
+    # fields on a non-dict port are dropped
+    assert port("str", fields={"x": FieldSpec(type="int", description="x")}).fields is None
+    # an example conflicting with the field contract is dropped; a matching one survives
+    fields = {"count": FieldSpec(type="int", description="n")}
+    assert port("dict", fields=fields, example={"total": 3}).example is None
+    assert port("dict", fields=fields, example={"count": 3}).example == {"count": 3}
+
+
 def test_incoherent_example_is_dropped_not_fatal():
     assert port("int", example="abc").example is None
     assert port("int", example=True).example is None
@@ -122,6 +143,32 @@ def run(features: gpd.GeoDataFrame) -> Output:
 """
     result = run_contract(synth_node(), code)
     assert not result.ok and "count" in result.error
+
+
+def test_output_dict_fields_are_enforced_key_by_key():
+    node = NodeSpec(
+        id="n", kind=NodeKind.synthesis, description="d",
+        inputs={"features": "GeoDataFrame"},
+        outputs={"report": port("dict", fields={
+            "count": FieldSpec(type="int", description="n"),
+            "names": FieldSpec(type="list[str]", description="names"),
+        })},
+    )
+
+    def code(returned: str) -> str:
+        return (
+            "import geopandas as gpd\n"
+            "def run(features: gpd.GeoDataFrame) -> dict:\n"
+            f"    return {{'report': {returned}}}\n"
+        )
+
+    missing_key = run_contract(node, code("{'total': 1, 'names': ['a']}"))
+    assert not missing_key.ok and "missing declared key 'count'" in missing_key.error
+
+    wrong_type = run_contract(node, code("{'count': '1', 'names': ['a']}"))
+    assert not wrong_type.ok and "key 'count' must be int, got str" in wrong_type.error
+
+    assert run_contract(node, code("{'count': 1, 'names': ['a', 'b']}")).ok
 
 
 def test_geodataframe_inside_return_typed_dict_validates():

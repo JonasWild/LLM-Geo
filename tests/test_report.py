@@ -1,15 +1,22 @@
 """Offline tests for report rendering and plan validation: no LLM calls involved."""
 from llm_geo import planner, registry
-from llm_geo.models import DAGSpec, ExecutionResult, NodeKind, NodeSpec, RunReport
-from llm_geo.planner import registry_errors, single_graph_errors, wiring_errors
+from llm_geo.models import DAGSpec, ExecutionResult, FieldSpec, NodeKind, NodeSpec, PortSpec, RunReport
+from llm_geo.planner import (
+    align_edge_ports, port_field_errors, registry_errors, single_graph_errors, wiring_errors,
+)
 from llm_geo.report import full_report, single_run_markdown
+
+
+def dict_port(fields: dict[str, str], description: str = "d", example=None) -> PortSpec:
+    return PortSpec(type="dict", description=description, example=example,
+                    fields={k: FieldSpec(type=t, description=k) for k, t in fields.items()})
 
 
 def make_dag(extra_nodes: list[NodeSpec] | None = None) -> DAGSpec:
     return DAGSpec(task="demo", nodes=[
         NodeSpec(id="load", kind=NodeKind.retrieval, description="load", outputs={"features": "GeoDataFrame"}),
         NodeSpec(id="summarize", kind=NodeKind.synthesis, description="summarize", depends_on=["load"],
-                 inputs={"features": "GeoDataFrame"}, outputs={"report": "dict"}),
+                 inputs={"features": "GeoDataFrame"}, outputs={"report": dict_port({"count": "int"})}),
         *(extra_nodes or []),
     ])
 
@@ -105,6 +112,60 @@ def test_wiring_errors():
     ])
     errors = wiring_errors(bad_param)
     assert len(errors) == 1 and "param literal is str" in errors[0]
+
+
+def test_wiring_checks_dict_fields_key_by_key():
+    dag = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.transformation, description="a",
+                 outputs={"stats": dict_port({"total": "int"})}),
+        NodeSpec(id="b", kind=NodeKind.synthesis, description="b", depends_on=["a"],
+                 inputs={"stats": dict_port({"total": "float", "names": "list[str]"})},
+                 outputs={"report": dict_port({"n": "int"})}),
+    ])
+    errors = wiring_errors(dag)
+    assert len(errors) == 1 and "requires dict key 'names'" in errors[0]
+    # 'total' produced no error: int -> float widening is allowed
+
+    mistyped = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.transformation, description="a",
+                 outputs={"stats": dict_port({"total": "str"})}),
+        NodeSpec(id="b", kind=NodeKind.synthesis, description="b", depends_on=["a"],
+                 inputs={"stats": dict_port({"total": "int"})},
+                 outputs={"report": dict_port({"n": "int"})}),
+    ])
+    errors = wiring_errors(mistyped)
+    assert len(errors) == 1 and "key 'total' expects int" in errors[0]
+
+
+def test_dict_outputs_of_custom_nodes_require_fields():
+    dag = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.synthesis, description="a", outputs={"report": "dict"}),
+    ])
+    errors = port_field_errors(dag)
+    assert len(errors) == 1 and "must declare `fields`" in errors[0]
+
+    registry_bound = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.synthesis, description="a", registry_id="some_op",
+                 outputs={"report": "dict"}),
+    ])
+    assert port_field_errors(registry_bound) == []
+
+
+def test_align_edge_ports_makes_producer_definition_authoritative():
+    producer_port = dict_port({"total": "int"}, description="authoritative", example={"total": 3})
+    dag = DAGSpec(task="t", nodes=[
+        NodeSpec(id="a", kind=NodeKind.transformation, description="a",
+                 outputs={"stats": producer_port}),
+        NodeSpec(id="b", kind=NodeKind.synthesis, description="b", depends_on=["a"],
+                 inputs={"stats": PortSpec(type="dict", description="vaguely worded copy")},
+                 outputs={"report": dict_port({"n": "int"})}),
+    ])
+    align_edge_ports(dag)
+    consumer = dag.nodes[1].inputs["stats"]
+    assert consumer.description == "authoritative"
+    assert consumer.fields["total"].type == "int"
+    assert consumer.example == {"total": 3}
+    assert consumer is not producer_port  # a deep copy, not a shared object
 
 
 def test_registry_errors(monkeypatch):

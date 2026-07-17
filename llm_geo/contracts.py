@@ -43,6 +43,26 @@ def coarse_type_ok(value: Any, type_name: str) -> bool:
     return False
 
 
+def field_type_ok(value: Any, type_name: str) -> bool:
+    if type_name.startswith("list["):
+        inner = type_name[5:-1]
+        return isinstance(value, list) and all(field_type_ok(item, inner) for item in value)
+    return coarse_type_ok(value, type_name)
+
+
+def dict_field_errors(label: str, port: Any, value: Mapping) -> list[str]:
+    """Check a dict value against the port's declared per-key field contract."""
+    errors = []
+    for name, field in (port.fields or {}).items():
+        if name not in value:
+            errors.append(f"{label}: missing declared key '{name}'")
+        elif not field_type_ok(value[name], field.type):
+            errors.append(
+                f"{label}: key '{name}' must be {field.type}, got {type(value[name]).__name__}"
+            )
+    return errors
+
+
 def _frame_errors(label: str, frame: gpd.GeoDataFrame) -> list[str]:
     errors = []
     try:
@@ -119,6 +139,8 @@ def input_errors(node: NodeSpec, resolved: Mapping[str, Any]) -> list[str]:
             )
         elif port.type == "GeoDataFrame":
             errors += _frame_errors(f"input '{name}'", resolved[name])
+        elif port.type == "dict":
+            errors += dict_field_errors(f"input '{name}'", port, resolved[name])
     return errors
 
 
@@ -139,6 +161,8 @@ def output_errors(node: NodeSpec, output: Any) -> list[str]:
             errors += _frame_errors(f"output '{name}'", value)
             if node.kind is NodeKind.retrieval and "provenance" not in getattr(value, "attrs", {}):
                 errors.append(f"retrieval output '{name}' is missing .attrs['provenance'] metadata")
+        elif port.type == "dict":
+            errors += dict_field_errors(f"output '{name}'", port, value)
     return errors
 
 

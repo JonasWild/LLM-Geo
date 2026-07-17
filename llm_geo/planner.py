@@ -7,10 +7,10 @@ import networkx as nx
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from .artifacts import RunArtifacts
-from .contracts import coarse_type_ok
+from .contracts import coarse_type_ok, dict_field_errors
 from .executor import resolve_inputs
 from .llm import retry_on_rate_limit
-from .models import DAGSpec
+from .models import DAGSpec, PortSpec
 from .registry import REGISTRY, catalog_text
 from .structured_output import run_structured_agent
 
@@ -22,21 +22,26 @@ Rules:
 - Every node needs a unique snake_case id, a precise `description`, `depends_on` node ids, \
 `inputs`/`outputs` (name -> port spec), and literal `params` for anything not coming from a \
 dependency.
-- A port spec has three fields:
+- A port spec has these fields:
   * `type`: one of str, int, float, bool, dict, GeoDataFrame.
-  * `description`: precisely what the value means -- units, semantics, expected dict keys, \
-expected GeoDataFrame columns and geometry kind. The implementer sees ONLY this, so be specific.
+  * `description`: precisely what the value means -- units, semantics, expected GeoDataFrame \
+columns and geometry kind. The implementer sees ONLY this, so be specific.
+  * `fields` (REQUIRED for every dict port): the dict's exact contract, one entry per key: \
+key name -> {type, description}. The key type is one of str, int, float, bool, dict, list[str], \
+list[int], list[float], list[dict]. Enumerate every key the consumer needs -- implementations \
+are validated key by key against this contract.
   * `example` (optional): a realistic literal sample value for scalar/dict ports, never for \
 GeoDataFrame. Provide one whenever you can -- it becomes the value the implementation is tested \
-against.
+against. A dict example must match the declared `fields`.
 - The nodes must form exactly ONE connected workflow graph: every node must be linked to the \
 rest via `depends_on` (no disconnected islands, no parallel unrelated graphs), converging on \
 the final answer node(s) for the task.
 - Retrieval nodes must output a `GeoDataFrame`-typed value carrying provenance metadata in \
 `.attrs["provenance"]`.
 - Wiring: a node's input is fed by whichever of its `depends_on` produced an output of the \
-SAME name. Name inputs/outputs consistently across dependent nodes so this wiring resolves, \
-and give the connected output and input the same `type`.
+SAME name. Name inputs/outputs consistently across dependent nodes so this wiring resolves. \
+A connected output and input must declare the IDENTICAL contract: same `type` and, for dicts, \
+the same `fields` key by key -- the producer's definition is authoritative.
 - A trusted implementation registry is available. If a node's need is exactly covered by one \
 of these, set `registry_id` to that id and make the node's inputs/outputs match it exactly \
 (same names, same types). Otherwise leave `registry_id` null and a coding agent will implement \
@@ -74,49 +79,105 @@ def single_graph_errors(dag: DAGSpec) -> list[str]:
 
 
 @dataclass(frozen=True)
-class _TypeToken:
-    """Stand-in for a dependency's output value when dry-running input resolution on types."""
+class _PortToken:
+    """Stand-in for a dependency's output value when dry-running input resolution on ports."""
 
-    type: str
+    port: PortSpec
 
 
 def _assignable(src: str, dst: str) -> bool:
-    return src == dst or (src == "int" and dst == "float")
+    return src == dst or (src, dst) in {("int", "float"), ("list[int]", "list[float]")}
+
+
+def _edge_field_errors(node_id: str, name: str, producer: str, src: PortSpec, dst: PortSpec) -> list[str]:
+    """A consumer's declared dict keys must all be covered by the producer's declaration."""
+    if dst.type != "dict" or not dst.fields:
+        return []
+    errors = []
+    src_fields = src.fields or {}
+    for key, field in dst.fields.items():
+        if key not in src_fields:
+            errors.append(
+                f"node '{node_id}': input '{name}' requires dict key '{key}' but '{producer}' "
+                f"does not declare it in its output fields"
+            )
+        elif not _assignable(src_fields[key].type, field.type):
+            errors.append(
+                f"node '{node_id}': input '{name}' key '{key}' expects {field.type} but "
+                f"'{producer}' declares {src_fields[key].type}"
+            )
+    return errors
+
+
+def _port_tokens(dag: DAGSpec) -> dict[str, dict[str, _PortToken]]:
+    return {
+        n.id: {name: _PortToken(port) for name, port in n.outputs.items()} for n in dag.nodes
+    }
 
 
 def wiring_errors(dag: DAGSpec) -> list[str]:
-    """Dry-run the executor's exact input resolution with type tokens instead of values: every
-    input must be fed, and fed with a compatible coarse type. Catches at plan time the mismatches
-    that would otherwise surface as confusing crashes inside downstream nodes."""
+    """Dry-run the executor's exact input resolution with port tokens instead of values: every
+    input must be fed, and fed with a compatible type -- for dicts, key by key. Catches at plan
+    time the mismatches that would otherwise surface as confusing crashes inside downstream
+    nodes."""
     known = {n.id for n in dag.nodes}
-    type_outputs = {
-        n.id: {name: _TypeToken(port.type) for name, port in n.outputs.items()} for n in dag.nodes
-    }
+    tokens = _port_tokens(dag)
     errors = []
     for node in dag.nodes:
         if any(dep not in known for dep in node.depends_on):
             continue  # unknown deps are already reported by single_graph_errors
-        resolved = resolve_inputs(node, {dep: type_outputs[dep] for dep in node.depends_on})
+        resolved = resolve_inputs(node, {dep: tokens[dep] for dep in node.depends_on})
         for name, port in node.inputs.items():
             if name not in resolved:
                 errors.append(
                     f"node '{node.id}': input '{name}' is fed by no dependency output and no param"
                 )
-            elif isinstance(fed := resolved[name], _TypeToken):
-                if not _assignable(fed.type, port.type):
-                    producer = next(
-                        (dep for dep in node.depends_on if name in type_outputs[dep]), "a dependency"
-                    )
+            elif isinstance(fed := resolved[name], _PortToken):
+                producer = next(
+                    (dep for dep in node.depends_on if name in tokens[dep]), "a dependency"
+                )
+                if not _assignable(fed.port.type, port.type):
                     errors.append(
                         f"node '{node.id}': input '{name}' expects {port.type} but '{producer}' "
-                        f"outputs {fed.type}"
+                        f"outputs {fed.port.type}"
                     )
+                else:
+                    errors += _edge_field_errors(node.id, name, producer, fed.port, port)
             elif not coarse_type_ok(fed, port.type):
                 errors.append(
                     f"node '{node.id}': input '{name}' expects {port.type} but its param literal "
                     f"is {type(fed).__name__} ({fed!r})"
                 )
+            elif port.type == "dict":
+                errors += [
+                    f"node '{node.id}': param literal for {problem}"
+                    for problem in dict_field_errors(f"input '{name}'", port, fed)
+                ]
     return errors
+
+
+def port_field_errors(dag: DAGSpec) -> list[str]:
+    """Every dict output of a custom (non-registry) node must declare its exact key contract."""
+    return [
+        f"node '{node.id}': dict output '{name}' must declare `fields` (one entry per key)"
+        for node in dag.nodes if not node.registry_id
+        for name, port in node.outputs.items() if port.type == "dict" and not port.fields
+    ]
+
+
+def align_edge_ports(dag: DAGSpec) -> None:
+    """Make every wired consumer input carry the SAME port spec as the producer's output.
+
+    After validation the producer's declaration is authoritative: description, fields and
+    example are copied over, so both sides are implemented -- and contract-tested -- against
+    one identical definition instead of two independently-worded ones."""
+    known = {n.id for n in dag.nodes}
+    tokens = _port_tokens(dag)
+    for node in dag.nodes:
+        resolved = resolve_inputs(node, {dep: tokens[dep] for dep in node.depends_on if dep in known})
+        for name in node.inputs:
+            if isinstance(token := resolved.get(name), _PortToken):
+                node.inputs[name] = token.port.model_copy(deep=True)
 
 
 def registry_errors(dag: DAGSpec) -> list[str]:
@@ -160,7 +221,7 @@ def registry_errors(dag: DAGSpec) -> list[str]:
 
 def plan_errors(dag: DAGSpec) -> list[str]:
     errors = single_graph_errors(dag)
-    return errors if errors else wiring_errors(dag) + registry_errors(dag)
+    return errors if errors else wiring_errors(dag) + registry_errors(dag) + port_field_errors(dag)
 
 
 @retry_on_rate_limit
@@ -170,6 +231,7 @@ def plan(task: str, model: BaseChatModel, artifacts: RunArtifacts | None = None)
     dag, _ = run_structured_agent(model, SYSTEM_PROMPT, task, DAGSpec)
     errors = plan_errors(dag)
     if not errors:
+        align_edge_ports(dag)
         return dag
 
     # One corrective round: show the planner its own invalid plan plus the specific violations.
@@ -188,4 +250,5 @@ def plan(task: str, model: BaseChatModel, artifacts: RunArtifacts | None = None)
         artifacts.record_error(
             "plan_validation", "planner DAG is still invalid after one retry, proceeding anyway:\n- " + "\n- ".join(remaining)
         )
+    align_edge_ports(dag)  # best effort even on an imperfect plan: one truth per edge
     return dag

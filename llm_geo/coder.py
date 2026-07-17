@@ -38,6 +38,10 @@ Params (static literals, passed as keyword arguments with exactly these values):
 Outputs (keys of the returned dict):
 {outputs}
 
+Where a dict port lists its keys (indented lines), that contract is ENFORCED key by key: the
+value must contain every listed key with exactly the listed type. Use those key names verbatim,
+do not invent different ones, and mirror them in your Output TypedDict.
+
 Available libraries you may `import` inside your code: geopandas, shapely, json, math, datetime,
 typing, typing_extensions.
 A `GeoDataFrame` value is a geopandas.GeoDataFrame with an active geometry column and CRS set. If
@@ -74,6 +78,8 @@ def render_ports(ports: dict[str, PortSpec]) -> str:
     for name, port in ports.items():
         example = f", e.g. {port.example!r}" if port.example is not None else ""
         lines.append(f"- {name} ({port.type}{example}): {port.description}")
+        for key, field in (port.fields or {}).items():
+            lines.append(f"    - ['{key}'] ({field.type}): {field.description}")
     return "\n".join(lines) or "- (none)"
 
 

@@ -16,14 +16,11 @@ def _sample_gdf() -> gpd.GeoDataFrame:
     )
 
 
-def make_value(port: PortSpec) -> Any:
-    # PortSpec guarantees a present example matches the declared type, so prefer it: the
-    # contract test then runs against the planner's intended realistic value.
-    if port.example is not None:
-        return float(port.example) if port.type == "float" else deepcopy(port.example)
-    match port.type:
-        case "GeoDataFrame":
-            return _sample_gdf()
+def field_value(type_name: str) -> Any:
+    if type_name.startswith("list["):
+        inner = type_name[5:-1]
+        return [field_value(inner), field_value(inner)]
+    match type_name:
         case "float":
             return 1.5
         case "int":
@@ -34,6 +31,18 @@ def make_value(port: PortSpec) -> Any:
             return {"synthetic": True}
         case _:
             return "synthetic-string"
+
+
+def make_value(port: PortSpec) -> Any:
+    # PortSpec guarantees a present example matches the declared type AND fields, so prefer it:
+    # the contract test then runs against the planner's intended realistic value.
+    if port.example is not None:
+        return float(port.example) if port.type == "float" else deepcopy(port.example)
+    if port.type == "GeoDataFrame":
+        return _sample_gdf()
+    if port.type == "dict" and port.fields:
+        return {name: field_value(field.type) for name, field in port.fields.items()}
+    return field_value(port.type)
 
 
 def make_inputs(inputs: dict[str, PortSpec]) -> dict[str, Any]:
