@@ -1,0 +1,7 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "properties": {"name": "market_st"}, "geometry": {"type": "LineString", "coordinates": [[-122.43, 37.77], [-122.41, 37.78]]}},
+    {"type": "Feature", "properties": {"name": "mission_st"}, "geometry": {"type": "LineString", "coordinates": [[-122.42, 37.76], [-122.40, 37.775]]}}
+  ]
+}

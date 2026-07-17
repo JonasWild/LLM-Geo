@@ -1,0 +1,8 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "properties": {"name": "sf_region_mask"}, "geometry": {"type": "Polygon", "coordinates": [[
+      [-122.44, 37.75], [-122.39, 37.75], [-122.39, 37.79], [-122.44, 37.79], [-122.44, 37.75]
+    ]]}}
+  ]
+}

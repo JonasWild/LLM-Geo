@@ -1,1 +1,0 @@
-"""Testing-only geospatial operations used to exercise registry discovery."""

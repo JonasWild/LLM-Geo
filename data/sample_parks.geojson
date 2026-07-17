@@ -1,0 +1,11 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "properties": {"name": "inside_park"}, "geometry": {"type": "Polygon", "coordinates": [[
+      [-122.43, 37.76], [-122.42, 37.76], [-122.42, 37.77], [-122.43, 37.77], [-122.43, 37.76]
+    ]]}},
+    {"type": "Feature", "properties": {"name": "outside_park"}, "geometry": {"type": "Polygon", "coordinates": [[
+      [-123.10, 38.50], [-123.05, 38.50], [-123.05, 38.55], [-123.10, 38.55], [-123.10, 38.50]
+    ]]}}
+  ]
+}

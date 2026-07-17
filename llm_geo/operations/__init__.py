@@ -8,7 +8,6 @@ from llm_geo.operations.registry import RegisteredOperation, code, registered_op
 
 def load_all_operations() -> tuple[RegisteredOperation, ...]:
     """Import every operations module and return all registered functions."""
-    import_module("llm_geo.tools.public_data_providers")
     prefix = f"{__name__}."
     for module in walk_packages(__path__, prefix):
         import_module(module.name)

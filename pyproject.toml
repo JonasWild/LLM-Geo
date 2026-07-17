@@ -1,50 +1,33 @@
 [project]
-name = "llm-geo"
-version = "0.2.0"
-description = "A Deep Agents based geospatial analysis agent"
-readme = "README.md"
-requires-python = ">=3.12,<4.0"
+name = "llm-geo-claude"
+version = "0.1.0"
+description = "Agentic LLM Geo-Analysis: DAG-planned, node-validated geospatial pipelines"
+requires-python = ">=3.11,<4.0"
 dependencies = [
-    "contextily (>=1.7.0,<2.0.0)",
-    "deepagents (>=0.6.12,<0.7.0)",
-    "folium (>=0.20.0,<1.0.0)",
-    "geopandas (>=1.1.2,<2.0.0)",
-    "langchain (>=1.3.11,<2.0.0)",
-    "langchain-openai (>=1.2.0,<2.0.0)",
-    "langgraph (>=1.0.8,<2.0.0)",
-    "langgraph-checkpoint-sqlite (>=3.0.0,<4.0.0)",
-    "matplotlib (>=3.10.0,<4.0.0)",
-    "mapclassify (>=2.10.0,<3.0.0)",
-    "networkx (>=3.4,<4.0)",
-    "openpyxl (>=3.1.5,<4.0.0)",
-    "pandas (>=3.0.1,<4.0.0)",
-    "pyarrow (>=23.0.1,<24.0.0)",
-    "pyvis (>=0.3.2,<1.0.0)",
-    "rasterio (>=1.5.0,<2.0.0)",
-    "requests (>=2.32,<3.0)",
-    "scipy (>=1.16,<2.0)",
-    "scikit-learn (>=1.7.0,<2.0.0)",
-    "seaborn (>=0.13,<1.0)",
-    "statsmodels (>=0.14,<1.0)",
-    "python-dotenv (>=1.2.2,<2.0.0)",
-    "toon-format (==0.9.0b1)",
+    "langgraph>=1.0",
+    "langchain>=1.0",
+    "langchain-openai>=1.0",
+    "deepagents>=0.6",
+    "geopandas>=1.1",
+    "shapely>=2.1",
+    "networkx>=3.4",
+    "pydantic>=2.9",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+    "dotenv (>=0.9.9,<0.10.0)",
+    "httpx-aiohttp (>=0.1.12,<0.2.0)",
     "pip-system-certs (>=5.3,<6.0)",
-    "faiss-cpu (>=1.14.3,<2.0.0)",
 ]
 
 [tool.poetry]
 package-mode = false
 
-[tool.poetry.group.eval.dependencies]
-deepeval = "4.0.7"
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
 
 [tool.pytest.ini_options]
-markers = [
-    "eval: DeepEval-based evaluation tests",
-    "llm: tests that require a live language model",
-    "integration: tests spanning the complete agent workflow",
-]
+pythonpath = ["."]
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core>=2.0"]
 build-backend = "poetry.core.masonry.api"
