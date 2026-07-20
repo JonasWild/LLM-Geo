@@ -14,6 +14,10 @@ def _sample_gdf() -> gpd.GeoDataFrame:
 
 
 def make_value(type_name: str) -> Any:
+    inner = _list_inner(type_name)
+    if inner is not None:
+        # Two synthetic elements so list-shaped contracts exercise more than a singleton.
+        return [make_value(inner), make_value(inner)]
     match type_name:
         case "GeoDataFrame":
             return _sample_gdf()
@@ -25,6 +29,16 @@ def make_value(type_name: str) -> Any:
             return {"synthetic": True}
         case _:
             return "synthetic-string"
+
+
+def _list_inner(type_name: str) -> str | None:
+    """'list[str]' -> 'str'; 'list' -> 'str'; anything else -> None."""
+    stripped = type_name.strip()
+    if stripped == "list":
+        return "str"
+    if stripped.startswith("list[") and stripped.endswith("]"):
+        return stripped[len("list[") : -1].strip()
+    return None
 
 
 def make_inputs(inputs: dict[str, str]) -> dict[str, Any]:

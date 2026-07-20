@@ -18,7 +18,8 @@ def _label(*lines: str) -> str:
 
 def _source(node, report: RunReport) -> str:
     if node.registry_id:
-        return f"registry:{node.registry_id}"
+        mapped = f" map:{node.map_over}" if node.map_over else ""
+        return f"registry:{node.registry_id}{mapped}"
     attempts = report.implementation_attempts.get(node.id)
     return f"llm-generated (x{attempts} attempt{'s' if attempts != 1 else ''})" if attempts else "llm-generated"
 

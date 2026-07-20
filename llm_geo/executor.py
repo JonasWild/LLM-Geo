@@ -4,12 +4,18 @@ from __future__ import annotations
 import time
 import traceback
 
+import geopandas as gpd
 import networkx as nx
+import pandas as pd
 
 from .contracts import compile_node
 from .models import DAGSpec, ExecutionResult, NodeImplementation, NodeSpec
 from .registry import REGISTRY
 from .trace import Tracer
+
+# Hard cap on a map node's fan-out: mapping a live-API registry op over an unbounded
+# upstream collection is a rate-limit incident waiting to happen, so refuse it up front.
+MAX_MAP_ITEMS = 100
 
 
 def build_graph(dag: DAGSpec) -> nx.DiGraph:
@@ -46,6 +52,55 @@ def _callable_for(node: NodeSpec, implementations: dict[str, NodeImplementation]
     if node.registry_id:
         return REGISTRY[node.registry_id]["fn"]
     return compile_node(implementations[node.id].code)
+
+
+def _collect_map_outputs(items: list[dict], declared_outputs: dict[str, str]) -> dict:
+    """Lift a list of per-element output dicts into one output dict. For each output name, if every
+    element produced a GeoDataFrame they are concatenated into one (per-element provenance collected
+    into a list under `.attrs["provenance"]`); otherwise the per-element values become a list."""
+    if not items:
+        # An empty mapped sequence (e.g. an upstream retrieval found nothing) still has to satisfy
+        # the node's declared outputs so downstream wiring and the terminal-output check hold.
+        return {
+            name: (gpd.GeoDataFrame({"geometry": []}, crs="EPSG:4326") if "GeoDataFrame" in typ else [])
+            for name, typ in declared_outputs.items()
+        }
+    collected: dict = {}
+    for name in items[0]:
+        values = [item[name] for item in items if name in item]
+        if values and all(isinstance(v, gpd.GeoDataFrame) for v in values):
+            merged = pd.concat(values, ignore_index=True)
+            provenances = [
+                v.attrs["provenance"] for v in values if "provenance" in getattr(v, "attrs", {})
+            ]
+            if provenances:
+                merged.attrs["provenance"] = provenances
+            collected[name] = merged
+        else:
+            collected[name] = values
+    return collected
+
+
+def _execute_map(node: NodeSpec, resolved: dict, tracer: Tracer) -> dict:
+    """Run `node`'s trusted registry op once per element of its `map_over` input, broadcasting every
+    other resolved input unchanged, and collect the per-element outputs."""
+    fn = REGISTRY[node.registry_id]["fn"]
+    sequence = resolved.get(node.map_over)
+    if not isinstance(sequence, list):
+        raise TypeError(
+            f"map_over input '{node.map_over}' must resolve to a list, got {type(sequence).__name__}"
+        )
+    if len(sequence) > MAX_MAP_ITEMS:
+        raise ValueError(f"map over {len(sequence)} items exceeds the cap of {MAX_MAP_ITEMS}")
+    items: list[dict] = []
+    for index, element in enumerate(sequence):
+        per_item = {**resolved, node.map_over: element}
+        try:
+            with tracer.span("exec", node.id, item=index):
+                items.append(fn(**per_item))
+        except Exception as exc:
+            raise RuntimeError(f"map item {index + 1}/{len(sequence)} ({element!r}): {exc}") from exc
+    return _collect_map_outputs(items, node.outputs)
 
 
 def execute(
@@ -90,9 +145,12 @@ def execute(
         t0 = time.monotonic()
         try:
             with tracer.span("exec", node_id):
-                fn = _callable_for(node, implementations)
                 node_inputs[node_id] = _resolve_inputs(node, outputs)
-                outputs[node_id] = fn(**node_inputs[node_id])
+                if node.map_over:
+                    outputs[node_id] = _execute_map(node, node_inputs[node_id], tracer)
+                else:
+                    fn = _callable_for(node, implementations)
+                    outputs[node_id] = fn(**node_inputs[node_id])
         except Exception as exc:
             node_status[node_id] = "error"
             node_duration_ms[node_id] = (time.monotonic() - t0) * 1000

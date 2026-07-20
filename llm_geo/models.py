@@ -20,7 +20,7 @@ class NodeSpec(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     inputs: dict[str, str] = Field(
         default_factory=dict,
-        description="input name -> type, one of str|int|float|bool|dict|GeoDataFrame",
+        description="input name -> type, one of str|int|float|bool|dict|GeoDataFrame or list[<one of those>]",
     )
     outputs: dict[str, str] = Field(
         default_factory=dict,
@@ -29,6 +29,16 @@ class NodeSpec(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict, description="static literal parameters")
     registry_id: str | None = Field(
         default=None, description="id of a trusted implementation from the tool registry, if one fits"
+    )
+    map_over: str | None = Field(
+        default=None,
+        description=(
+            "name of ONE list-typed input to fan out over: the trusted `registry_id` operation is "
+            "run once per element of this input, with every other input/param broadcast unchanged to "
+            "each call. Requires `registry_id`; the named input must be declared `list[<elem type>]` "
+            "and must be an input the registry op accepts. GeoDataFrame outputs are concatenated into "
+            "one GeoDataFrame; other outputs become a list of the per-element values."
+        ),
     )
 
 
